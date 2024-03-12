@@ -21,7 +21,7 @@ def main_script():
     """
     Top-level function that puts together:
 
-    - Vehicle
+    - Vehicle definition
         - Components
     - Mass properties 
     - Mission 
@@ -29,19 +29,28 @@ def main_script():
     """
 
     # define the vehicle 
-    vehicle = define_vehicle(geometry)
+    vehicle = define_vehicle_components(geometry)
 
-    mission_plan = define_mission_plan(vehicle) # what if we also specified off-design conditions here?
+    # define conditions
+    conditions = define_conditions()
+    
+    # define configurations
+    define_configurations(vehicle, conditions)
 
+    # define function spaces
     define_function_spaces(vehicle)
 
+    # define meshes
     define_meshes(vehicle)
 
-    define_pre_mission_analysis(mission_plan, vehicle)
+    # define condition-independent analysis --> basically just mass properties
+    define_mass_properties(conditions)
 
-    define_off_design_analysis(vehicle, pre_mission)
+    # optional
+    define_aero_dynamic_pre_calculations()
 
-    mission = define_mission_analysis(mission_plan, vehicle, pre_mission)
+    # define condition analysis
+    define_condition_analysis(conditions)
 
     
 
@@ -58,7 +67,7 @@ def main_script():
     return processed_results
 
 
-def define_vehicle(geometry):
+def define_vehicle_components(geometry):
     """
     Define the vehicle based on its geometry and components.
     
@@ -75,9 +84,10 @@ def define_vehicle(geometry):
     )
 
     # NOTE: I moved the airframe to the top of this function, which helps out with the lift rotor thing
-    airframe = vehicle.airframe # airframe is an instance of a csdl.VariableGroup? - what is this even doing?
+    airframe = cd.Airframe(geometry_indices=lg.b_spline_search(''))
+    vehicle['airframe'] = airframe # airframe is an instance of a csdl.VariableGroup? - what is this even doing? NOTE: airframe should be an instance of a cd.Component
 
-    # Option 2: create the wing_comp object first, then declare the component
+    # Option 1: create the wing_comp object first, then declare the component
     # This is actually fewer lines, and might be more readable too
     wing = cd.WingComp(
         geometry_indices=lg.b_spline_search('Wing'),
@@ -85,81 +95,149 @@ def define_vehicle(geometry):
         design_reference_area=210.,
         design_taper_ratio=0.5, 
     )
-    vehicle.declare_component(wing, 'wing') # NOTE: name is needed for key to dictionary? 
-        
-    spar_comp = cd.SparComp(
-            dist_to_le=0.3,
-            thickness=0.25,
-            # ...
-            )
-    wing.declare_component(spar_comp, 'spar')
+    # NOTE: name is needed for key to dictionary? 
+    # NOTE: in my mind 'declare_component' would add wing to pre-dfined copmponents dict (recognized by type wing comp) and therefore won't need a name
+    
+    # Option 1a: delcare component on airframe
+    airframe.declare_component(wing, 'wing')
 
-    # what about multiple lift rotors?
-    # NOTE: it would be nice if all the rotors went into a list (a rotors component?)
-    # could also just do this:
-    vehicle.lift_rotors = []
+    # Option 1b: populate airframes components dict (with type hints)
+    airframe['wing'] = wing
+
+    # Option 2a: declare_component() returns an instance of WinComp
+    wing = vehicle.declare_component(
+        cd.WingComp(
+            geometry_indices=lg.b_spline_search('Wing'),
+            design_aspect_ratio=10.,
+            design_reference_area=210.,
+            design_taper_ratio=0.5, 
+        )
+    )
+
+    # Option 2b: populate airframes components dict (with type hints)
+    airframe['wing'] = cd.WingComp(
+        geometry_indices=lg.b_spline_search('Wing'),
+        design_aspect_ratio=10.,
+        design_reference_area=210.,
+        design_taper_ratio=0.5,
+    )
+
+    # Define other subcomponents
+    spar_comp = cd.SparComp(
+        dist_to_le=0.3,
+        thickness=0.25,
+        # ...
+    )
+    wing['spar'] = spar_comp
+
+    # Lift rotors
+    airframe['lift_rotors'] = cd.Component(geometry_indices = lg.b_spline_search('Rotor'))
     for i in range(8):
         rotor_comp = cd.RotorComp(
             geometry_indices=lg.b_spline_search(f'Rotor{i}'),
             # ...
         )
-        vehicle.declare_component(rotor_comp, name=f'rotor{i}')
-        vehicle.lift_rotors.append(rotor_comp)
+        airframe['lift_rotors'][f'rotor{i}'] = rotor_comp
+
+        for j in range(2):
+            blade_comp = cd.BladeComp(
+                geometry_indices=lg.b_spline_searach(f'Rotor{i}blade, {j}')
+            )
+            rotor_comp[f'blade{j}'] = blade_comp
+
 
     fuselage = cd.FuselageComp(
             length=28. * cd.Units("feet"), 
             max_diameter=5. * cd.Units("feet"),
             max_height=1.3 * cd.Units("meters")
         )
-    fuselage = vehicle.declare_component(fuselage, 'fuselage')
+    airframe['fuselage'] = fuselage
 
     fuel_tank = cd.FuelTank(
             length=2., 
             width=1.,
             height=0.25
         )
-    fuel_tank = fuselage.declare_component(fuel_tank, 'fuel_tank')   
+    fuselage['fuel_tank'] = fuel_tank
     # NOTE: Might need to make a fuel tank component from OML or in OpenVSP if geometry changes
-
-    # NOTE:
-    #   - what if a user wants to add a component to the airframe 
-    #   - idea is that CADDEE has a standard airframe variable group
-    #   - but for unconventional configurations, a user might not need all 
-    #     componentns or want to add component
-
-    # NOTE: I got rid of the part where we added the components to the airframe - it seemed redundant
 
 
     # Defining the powertrain (cd.Pwertrain inherits from Network)
-    powertrain = cd.Powertrain()
+    powertrain = vehicle.powertrain
+
+    # batteries
+    battery_1 = cd.Battery()
+    battery_2 = cd.Battery()
+
+    # dc-dc converters
+    dc_dc_1 = cd.DCDCConverter()
+    dc_dc_2 = cd.DCDCConverter()
+
+    # dc bus
+    dc_bus = cd.DCBus()
+
+    # inverter
+    inverter = cd.Inverter()
+
+    # motor
+    motor = cd.Motor()
+
+    # rotor
+    rotor = airframe['lift_rotors']['rotor0']
+
+    # Option 1: add all nodes at onces 
+    powertrain.add_nodes_from([
+        battery_1, battery_2, dc_dc_1, dc_dc_2,
+        dc_bus, inverter, motor, rotor, 
+    ])
+    
+    # Option 2: add one node at a time 
+    powertrain.add_node(battery_1)
+    powertrain.add_node(battery_2)
+    powertrain.add_node(dc_dc_1)
+    # ...
+
+
+    
 
     return vehicle
 
 
-def define_mission_plan(vehicle):
+def define_conditions():
     """
-    Define the mission plan for an eVTOL aircraft.
+    Define the atmospheric/ operating environments for the design conditions
 
     This function creates and configures various conditions and inputs for the mission plan,
     including hover, transition, climb, and cruise conditions. It then assigns these conditions
-    to an eVTOLMissionPlan object and returns it.
+    to an eVTOLDesignEnvironments object and returns it.
 
     Returns:
-        lpc_mission_plan (cd.eVTOLMissionPlan): The mission plan for the eVTOL aircraft.
+        lpc_design_environments (cd.eVTOLDesignEnvironments): The design environments for the eVTOL aircraft.
     """
+
+    lpc_conditions = cd.Conditions()
 
     ### On-design mission segments ###
 
     # Hover
-    hover_condition = system_model.register_submodel(cd.design_condition.Hover())
-    hover_inputs = cd.design_condition.HoverInputs()
-    hover_inputs['time'] = system_model.create_input()
-    hover_inputs['altitude'] = system_model.create_input()
-    hover_variable_group = hover_condition.evaluate(hover_inputs)
+    hover_condition = cd.design_condition.Hover(
+        atmosphere_model=cd.atmos.SimpleAtmosphere,
+        eom_model=cd.eom.6DOFGeneralReferenceFrame,
+    )
+    lpc_conditions.add_condition('hover', hover_condition)
+    hover_condition.inputs['time'] = system_model.create_input()
+    hover_condition.inputs['altitude'] = system_model.create_input()
+    hover_condition.evaluate_vehicle_states()
+    hover_condition.evaluate_atmosphere()
+
+    # TODO: carry above structure to other conditions
 
     # Transition
     # NOTE: transition requires more flexibility, so user can specify ac-states directly
-    transition = system_model.register_submodel(cd.design_condition.Transition())
+    transition = system_model.register_submodel(cd.design_condition.Transition(
+        name='transition_1',
+        atmosphere__model=cd.atmos.AdvancedAtmosphereModel
+    ))
     transition_inputs = cd.design_condition.TransitionInputs()
     transition.inputs['u'] = system_model.create_input(...)
     transition.inputs['v'] = system_model.create_input()
@@ -209,57 +287,85 @@ def define_mission_plan(vehicle):
 
     ### add conditions to mission plan ###
 
-    lpc_mission_plan = cd.eVTOLMissionPlan(vehicle=vehicle)
-    # in addition to adding conditions, this also adds a configuration for each condition
-    lpc_mission_plan.add_condition('hover_condition', hover_variable_group) 
-    lpc_mission_plan.add_condition('transition_condition', transition_variable_group)
-    lpc_mission_plan.add_condition('climb_condition', climb_variable_group)
-    lpc_mission_plan.add_condition('cruise_condition', cruise_variable_group)
+    lpc_conditions.add_condition('hover_condition', hover_variable_group) 
+    lpc_conditions.add_condition('transition_condition', transition_variable_group)
+    lpc_conditions.add_condition('climb_condition', climb_variable_group)
+    lpc_conditions.add_condition('cruise_condition', cruise_variable_group)
 
-    lpc_mission_plan.add_contingency_condition('oei_hover_condition', oei_hover_variable_group)
-    lpc_mission_plan.add_contingency_condition('plus_3g_sizing_condition', plus_3g_sizing_variable_group)
+    lpc_conditions.add_contingency_condition('oei_hover_condition', oei_hover_variable_group)
+    lpc_conditions.add_contingency_condition('plus_3g_sizing_condition', plus_3g_sizing_variable_group)
 
-    return lpc_mission_plan
+    return lpc_conditions
 
-def define_pre_mission_analysis(mission_plan, vehicle, system_model):
+
+def define_configurations(vehicle, conditions):
     """
-    Non-mission dependent part of the analysis 
-      - Geometry/configuration-level parameters --> for us would be on define_vehicle()
-      - mass properties
-      - vehicle-level parameters/properties (Cl_max, V_stall)
-      - Mission parameters that depend on the geometry (e.g., compute Cd from geometry once)
-    Examples of edge-cases where most but not all of the mass properties and the geometry are unchanged across the mission
-      - +3g/-1g load cases: 
-              significant deformation of the geometry leads to changes in mass properties; 
-              it's like a mission segement but not formally part of the mission 
-      - fuel burning mission:
-              fuel mass changes over the course of the mission based on TSFC;
-              This will in turn change the aircraft-level mass properties 
-       - wing bending for dynamic analysis (aero-structural coupling):
-              strucutural displacements over the course of the mission based on aerodynamic loads
-              This will in turn change the aircraft-level mass properties 
-
-      --> Common across these example is that the geometry/ mass properties need to be updated for the parts that 
-          are changing;
+    Define the configurations for the vehicle based on the conditions
     """
+
+    # Define the configurations for the vehicle
+
+    conditions.set_base_configuration(vehicle)
+
+    # Hover configuration
+    config = conditions['hover'].configuration
+    for lift_rotor in config['airframe']['lift_rotors']:
+        lift_rotor.rpm = system_model.create_input(shape=(1, )) # Controls rotor speed
+        lift_rotor.x_tilt = system_model.create_input(shape=(1, )) # Controls disk tilt angle (collective)
+        lift_rotor.y_tilt = system_model.create_input(shape=(1, )) # Controls disk tilt angle (collective)
+        lift_rotor.blade_pitch = system_model.create_input(shape=(30, )) # Controls blade azimuthally (cyclic)
+        # NOTE: Independent of the type of solver that will be specified later
+
+    # Transition configuration
+    config = conditions['transition'].configuration
+    num_nodes = conditions['transition'].num_nodes
+    for lift_rotor in config['airframe']['lift_rotors']:
+        lift_rotor.rpm = system_model.create_input(shape=(num_nodes, )) # Controls rotor speed
+
+    config['airframe']['wing']['flap_deflection'] = system_model.create_input(shape=(num_nodes, )) # Controls wing flap deflection
+    config['airframe']['tail']['elevator_deflection'] = system_model.create_input(shape=(num_nodes, )) # Controls elevator deflection
+
+def define_function_spaces(vehicle):
+    """
+    Define the function spaces for the vehicle components
+    """
+    vehicle.airframe['wing'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
+    vehicle.airframe['wing'].create_function_space(name='displacement', type='bspline', shape=(5,5), order=2)
+    vehicle.airframe['wing'].create_function_space(name='pressure', type='bspline', shape=(5,5), order=2)
+
+    vehicle.airframe['tail'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
+    vehicle.airframe['tail'].create_function_space(name='pressure', type='bspline', shape=(5,5), order=2)
+
+    vehicle.airframe['rotor'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
+
+def define_meshes(vehicle):
+    """
+    Define the meshes for the vehicle components
+    """
+    # create solver meshes
+    # as these meshes are being created on the vehicle, they should be carried over to each configuration,
+    # and should be actuated differently with different configurations
+    vlm_mesher = system_model.register_submodel(vast.VLMMesher())
+    wing_vlm_camber_surface_mesh = vlm_mesher.evaluate(vehicle.airframe['wing'], num_chordwise_panels=20, num_spanwise_panels=20)
+    tail_vlm_camber_surface_mesh = vlm_mesher.evaluate(vehicle.airframe['tail'], num_chordwise_panels=10, num_spanwise_panels=10)
+    vehicle.airframe['wing'].add_mesh('vlm_camber_surface', wing_vlm_camber_surface_mesh)
+    vehicle.airframe['tail'].add_mesh('vlm_camber_surface', tail_vlm_camber_surface_mesh)
     
-    # Mass properties
-    compute_mass_properties(vehicle, mission_plan)
+    rotor_mesher = system_model.register_submodel(lsdo_rotor.Mesher())
+    rotor_mesh = rotor_mesher.evaluate(vehicle.airframe['pusher_rotor'], num_radial=30, num_azimuthal=30)
+    vehicle.airframe['pusher_rotor'].add_mesh('bem', rotor_mesh)
 
-    # Pre-aero computations
-    #   E.g., V_stall, Cl_max, components Cd
+    for rotor in vehicle.rotors:
+        rotor_mesh = rotor_mesher.evaluate(rotor, num_radial=30, num_azimuthal=30)
+        rotor.add_mesh('bem', rotor_mesh)
 
-    
-    # structural sizing cases +3/-1g conditions
+    beam_mesher = system_model.register_submodel(aframe.BeamMesher(fix_midpoint=True))
+    beam_mesh = beam_mesher.evaluate(vehicle.airframe['wing'], num_elements=20)
+    vehicle.airframe['wing'].add_mesh('beam', beam_mesh)
 
+def define_mass_properties(conditions):
 
-
-    
-
-
-    return 
-
-def compute_mass_properties(vehicle, mission_plan):
+    vehicle = conditions.base_configuration
 
     # Airframe 
     m4_regression_mass_model = cd.mass_properties.M4Regression()
@@ -270,7 +376,7 @@ def compute_mass_properties(vehicle, mission_plan):
     m4_regression_mass_model_inputs['fuselage_length'] = vehicle.airframe['fuselage'].length
     m4_regression_mass_model_inputs['h_tail_area'] = vehicle.airframe['h_tail'].area
     m4_regression_mass_model_inputs['v_tail_area'] = vehicle.airframe['v_tail'].area
-    m4_regression_mass_model_inputs['cruise_speed'] = mission_plan['cruise_condition']['cruise_speed']
+    m4_regression_mass_model_inputs['cruise_speed'] = conditions['cruise_condition'].cruise_speed
 
     # airframe_mass_properties is a MassProperties(VariableGroup) object that contains the mass properties of the airframe.
     #    the same is true of any static mass properties
@@ -344,65 +450,56 @@ def compute_mass_properties(vehicle, mission_plan):
     )
 
 
-def define_function_spaces(vehicle):
-    """
-    Define the function spaces for the vehicle components
-    """
-    vehicle.airframe['wing'].create_function_space(type='idw', shape=(5,5), order=2)
-    vehicle.airframe['wing'].create_function_space(name='displacement', type='bspline', shape=(5,5), order=2)
-    vehicle.airframe['wing'].create_function_space(name='pressure', type='bspline', shape=(5,5), order=2)
+def define_mission_analysis(conditions):
+    # Where the solvers go
 
-    vehicle.airframe['tail'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
-    vehicle.airframe['tail'].create_function_space(name='pressure', type='bspline', shape=(5,5), order=2)
+    # TODO:
+    #   - defining displacement/pressure/etc fields 
+    #   - how to set up coupled analyses (aero-elasticity)
+    #   - how to set up dynamic analyses 
+    #       - trajectory optimization
+    #       - UVLM  
 
-    vehicle.airframe['rotor'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
-
-def define_meshes(vehicle):
-    """
-    Define the meshes for the vehicle components
-    """
-    # create solver meshes
-    # as these meshes are being created on the vehicle, they should be carried over to each configuration,
-    # and should be actuated differently with different configurations
-    vlm_mesher = system_model.register_submodel(vast.VLMMesher())
-    wing_vlm_camber_surface_mesh = vlm_mesher.evaluate(vehicle.airframe['wing'], num_chordwise_panels=20, num_spanwise_panels=20)
-    tail_vlm_camber_surface_mesh = vlm_mesher.evaluate(vehicle.airframe['tail'], num_chordwise_panels=10, num_spanwise_panels=10)
-    vehicle.airframe['wing'].add_mesh('vlm_camber_surface', wing_vlm_camber_surface_mesh)
-    vehicle.airframe['tail'].add_mesh('vlm_camber_surface', tail_vlm_camber_surface_mesh)
     
-    rotor_mesher = system_model.register_submodel(lsdo_rotor.Mesher())
-    rotor_mesh = rotor_mesher.evaluate(vehicle.airframe['pusher_rotor'], num_radial=30, num_azimuthal=30)
-    vehicle.airframe['pusher_rotor'].add_mesh('bem', rotor_mesh)
+    
+    
+    
+    # Hover analysis
+    
 
-    for rotor in vehicle.rotors:
-        rotor_mesh = rotor_mesher.evaluate(rotor, num_radial=30, num_azimuthal=30)
-        rotor.add_mesh('bem', rotor_mesh)
+    # Transition analysis
 
-    beam_mesher = system_model.register_submodel(aframe.BeamMesher(fix_midpoint=True))
-    beam_mesh = beam_mesher.evaluate(vehicle.airframe['wing'], num_elements=20)
-    vehicle.airframe['wing'].add_mesh('beam', beam_mesh)
+    # Climb analysis
 
+    # Cruise analysis
 
-def define_off_design_analysis(mission_plan, vehicle, pre_mission):
-    """
-    Define the off-design analysis based on the pre-mission analysis
-    """
-
-    plus_3g_sizing_condition(mission_plan, vehicle, pre_mission)
-    oei_hover_condition(mission_plan, vehicle, pre_mission)
+    
 
 
+    # TODO
+    #   - battery: (mass at the end of the mission) vs (at pre-mission + residual)
+    #   - SIFR function space setup
+    #   - trim
+    #   - more practical constraints (top-level aircraft parameters/regulations)
+    #   - sweeps & other simpler analyses
+    #       - W/S vs T/W sizing analysis that go in pre-mission
+
+    ### off-design conditions ###
+
+    plus_3g_sizing_condition(conditions['plus_3g_sizing_condition'])
+    
+    hover_oei_condition(conditions['hover_oei'])
 
 
 
-def plus_3g_sizing_condition(mission_plan, pre_mission):
 
 
-    plus_3g_sizing_variable_group = mission_plan['plus_3g_sizing_condition'].variable_group # idk about this exactly
-    plus_3g_config = mission_plan['plus_3g_sizing_condition'].configuration
+def plus_3g_sizing_condition(condition):
 
-    plus_3g_ac_states = plus_3g_sizing_variable_group['ac_states']
-    plus_3g_atmosphere = plus_3g_sizing_variable_group['atmosphere']
+    plus_3g_config = condition.configuration
+
+    plus_3g_ac_states = condition.vehicle_states
+    plus_3g_atmosphere = condition.atmosphere
 
     # function spaces
     wing_force_function_space = plus_3g_config.airframe['wing']['force_function_space']
@@ -422,7 +519,6 @@ def plus_3g_sizing_condition(mission_plan, pre_mission):
     # map for force and displacement transfer
     idw_map = system_model.register_submodel(sifr.IDWMap())
     
-
     # vlm solver
     cruise_aero_solver = system_model.register_submodel(vast.SteadyVLM(vlm_parameters=...))
     cruise_aero_inputs = vast.SteadyVLMInputs()
@@ -465,16 +561,17 @@ def plus_3g_sizing_condition(mission_plan, pre_mission):
     solver.run()
 
     # compute mass properties for EOM
-    fuselage_fuel_tank_mass_properties = plus_3g_config.mass_properties['fuselage_fuel_tank'].evaluate(fill_level=fill_level)
+    fill_level = 1.0
+    plus_3g_config['fuselage']['fuel_tank'].fill_level = fill_level
 
-    fuselage_fuel_tank_mass_properties_input['fill_level'] = fill_level
-    plus_3g_mass_properties = plus_3g_config.mass_properties.evaluate(
-        overwrite=[plus_3g_config.airframe['wing'], beam_outputs['mass_properties']],
-        dynamic_inputs = [wing_tank_fill_level, fuselage_tank_fill_level]
-        dynamic_inputs = [
-            mass_properties['dynmaic_mass_properties']['inputs']['fuselage_fuel_tank']['fill_level'] = fill_level
-        ]
-    )
+    beam_mass_model = system_model.register_submodel(aframe.BeamMassModel())
+    beam_mass_model_inputs = aframe.BeamMassModelInputs()
+    beam_mass_model_inputs['mesh'] = wing_beam_mesh
+    beam_mass_model_inputs['top_skin_thickness'] = plus_3g_config['airframe']['wing']['top_skin_thickness']
+    ...
+    plus_3g_config['airfarame']['wing'].mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
+
+    plus_3g_mass_properties = plus_3g_config.mass_properties.evaluate()
 
     # bem solver 
     bem_solver = system_model.register_submodel(lsdo_rotor.BEMModel(bem_parameters=...))
@@ -486,52 +583,14 @@ def plus_3g_sizing_condition(mission_plan, pre_mission):
     bem_outputs = bem_solver.evaluate(bem_inputs)
 
     # equations of motion
-    plus_3g_sizing_eom_model = system_model.register_submodel(cd.eom_models.ForceEquilibriumModel())
-    plus_3g_sizing_eom_model_inputs = cd.eom_model.ForceEquilibriumModelInputs()
-    plus_3g_sizing_eom_model_inputs['vehicle_mass_properties'] = plus_3g_config.mass_properties
+    plus_3g_sizing_eom_model = condition.eom_model
+    plus_3g_sizing_eom_model_inputs = condition.eom_model_inputs
+    plus_3g_sizing_eom_model_inputs['vehicle_mass_properties'] = plus_3g_mass_properties
     plus_3g_sizing_eom_model_inputs['ac_states'] = plus_3g_ac_states
     plus_3g_sizing_eom_model_inputs['aero_prop_forces'] = [vlm_outputs['forces'], bem_outputs['forces']]
 
     plus_3g_sizing_eom_model_outputs = plus_3g_sizing_eom_model.evaluate(plus_3g_sizing_eom_model_inputs)
     system_model.add_constraint(plus_3g_sizing_eom_model_outputs['net_forces'], equals=0., scaler=1e-1)
-
-
-
-def define_mission_analysis(vehicle, mission_plan):
-    # Where the solvers go
-
-    # TODO:
-    #   - defining displacement/pressure/etc fields 
-    #   - how to set up coupled analyses (aero-elasticity)
-    #   - how to set up dynamic analyses 
-    #       - trajectory optimization
-    #       - UVLM  
-
-    
-    
-    
-    
-    # Hover analysis
-    
-
-    # Transition analysis
-
-    # Climb analysis
-
-    # Cruise analysis
-
-    
-
-
-    # TODO
-    #   - battery: (mass at the end of the mission) vs (at pre-mission + residual)
-    #   - SIFR function space setup
-    #   - trim
-    #   - more practical constraints (top-level aircraft parameters/regulations)
-    #   - sweeps & other simpler analyses
-    #       - W/S vs T/W sizing analysis that go in pre-mission
-
-
 
 
 
