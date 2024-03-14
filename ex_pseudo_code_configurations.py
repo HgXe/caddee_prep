@@ -362,82 +362,47 @@ def define_mass_properties(conditions):
     m4_regression_mass_model_inputs = cd.mass_properties.M4RegressionInputs()
 
     # NOTE: consider changing component attributes to variable groups 
-    m4_regression_mass_model_inputs['wing_AR'] = vehicle.airframe['wing'].AR 
-    m4_regression_mass_model_inputs['fuselage_length'] = vehicle.airframe['fuselage'].length
-    m4_regression_mass_model_inputs['h_tail_area'] = vehicle.airframe['h_tail'].area
-    m4_regression_mass_model_inputs['v_tail_area'] = vehicle.airframe['v_tail'].area
+    m4_regression_mass_model_inputs['wing_AR'] = vehicle['airframe']['wing'].AR 
+    m4_regression_mass_model_inputs['fuselage_length'] = vehicle['airframe']['fuselage'].length
+    m4_regression_mass_model_inputs['h_tail_area'] = vehicle['airframe']['h_tail'].area
+    m4_regression_mass_model_inputs['v_tail_area'] = vehicle['airframe']['v_tail'].area
     m4_regression_mass_model_inputs['cruise_speed'] = conditions['cruise_condition'].cruise_speed
 
     # airframe_mass_properties is a MassProperties(VariableGroup) object that contains the mass properties of the airframe.
     #    the same is true of any static mass properties
-    airframe_mass_properties = m4_regression_mass_model.evaluate(m4_regression_mass_model_inputs)
+    vehicle['airframe'].mass_properties = m4_regression_mass_model.evaluate(m4_regression_mass_model_inputs)
 
     # Battery
     battery_mass_model = system_model.register_submodel(cd.mass_properties.BatteryMassProperties())
     battery_mass_model_inputs = cd.mass_properties.BatteryMassPropertiesInputs()
     battery_mass_model_inputs['mass'] = system_model.create_input()
     battery_mass_model_inputs['cg_location'] = system_model.create_input()
-    battery_mass_properties = battery_mass_model.evaluate(battery_mass_model_inputs)
+    vehicle['powertrain']['battery'].mass_properties = battery_mass_model.evaluate(battery_mass_model_inputs)
 
     # Wing Fuel Tank
     wing_fuel_tank_mass_model = cd.mass_properties.dynamic.FuelTankMPModel()
     wing_fuel_tank_mass_model_inputs = cd.mass_properties.FuelTankMPModelInputs()
-    wing_fuel_tank_mass_model_inputs['volume'] = vehicle.airframe['wing'].volume*0.5
+    wing_fuel_tank_mass_model_inputs['volume'] = vehicle['airframe']['wing'].volume*0.5
     wing_fuel_tank_mass_model_inputs['empty_mass'] = system_model.create_input(value=0) # NOTE: assuming fuel tank is (part) of the wing
-    wing_fuel_tank_mass_model_inputs['empty_cg'] = vehicle.airframe['wing'].cg_location
+    wing_fuel_tank_mass_model_inputs['empty_cg'] = vehicle['airframe']['wing'].cg_location
     wing_fuel_tank_mass_model_inputs['fuel_mass'] = wing_fuel_tank_mass_model_inputs['volume']*density_of_fuel
 
     # NOTE: use bsplines (SIFR) to interpolate fuel mass proerties at fill level?
     # wing_fuel_tank_mass_properties is an instance of a MassProperties(csdl.Model) object who's
     #     evaluate method takes in a fill level and returns the mass properties at that fill level
-    wing_fuel_tank_mass_properties = wing_fuel_tank_mass_model.evaluate(wing_fuel_tank_mass_model_inputs)
-
+    vehicle['airframe']['wing'].mass_properties = wing_fuel_tank_mass_model.evaluate(wing_fuel_tank_mass_model_inputs)
 
     # Fuselage Fuel Tank
     fuselage_fuel_tank_mass_model = cd.mass_properties.dynamic.FuelTankMPModel()
     fuselage_fuel_tank_mass_model_inputs = cd.mass_properties.FuelTankMPModelInputs()
-    fuselage_fuel_tank_mass_model_inputs['volume'] = vehicle.airframe['fuselage']['fuel_tank'].volume
-    fuselage_fuel_tank_mass_model_inputs['empty_mass'] = vehicle.airframe['fuselage']['fuel_tank'].surface_area*fuel_tank_skin_area_density
-    fuselage_fuel_tank_mass_model_inputs['empty_cg'] = vehicle.airframe['fuselage']['fuel_tank'].geometric_center
-    fuselage_fuel_tank_mass_model_inputs['fuel_mass'] = vehicle.airframe['fuselage']['fuel_tank'].volume*density_of_fuel
-    fuselage_fuel_tank_mass_model_inputs['fill_level'] = vehicle.airframe['fuselage']['fuel_tank'].fill_level
+    fuselage_fuel_tank_mass_model_inputs['volume'] = vehicle['airframe']['fuselage']['fuel_tank'].volume
+    fuselage_fuel_tank_mass_model_inputs['empty_mass'] = vehicle['airframe']['fuselage']['fuel_tank'].surface_area*fuel_tank_skin_area_density
+    fuselage_fuel_tank_mass_model_inputs['empty_cg'] = vehicle['airframe']['fuselage']['fuel_tank'].geometric_center
+    fuselage_fuel_tank_mass_model_inputs['fuel_mass'] = vehicle['airframe']['fuselage']['fuel_tank'].volume*density_of_fuel
+    fuselage_fuel_tank_mass_model_inputs['fill_level'] = vehicle['airframe']['fuselage']['fuel_tank'].fill_level
     
-    fuselage_fuel_tank_mass_properties = fuselage_fuel_tank_mass_model.evaluate(fuselage_fuel_tank_mass_model_inputs)
+    vehicle['airframe']['fuselage']['fuel_tank'].mass_properties  = fuselage_fuel_tank_mass_model.evaluate(fuselage_fuel_tank_mass_model_inputs)   
 
-    vehicle.assemble_mass_properties(
-        dynamic_mass_properties = [
-            fuselage_fuel_tank_mass_properties,
-            wing_fuel_tank_mass_properties], # NOTE: fuel tank MPs is not a variable group, it's a csdl model
-        static_mass_properties = [
-            airframe_mass_properties,
-            battery_mass_properties]
-    )
-
-    # This will be in the corresponding mission segment
-
-    # option 1
-    vehicle.airframe['fuselage']['fuel_tank'].fill_level = fill_level
-    vehicle.airframe['wing']['fuel_tank'].fill_level = fill_level
-    
-    plus_3g_mass_properties = vehicle.mass_properties.evaluate(
-        overwrite=[vehicle.airframe['wing'], beam_outputs['mass_properties']],
-    )
-
-    # option 2
-    fuselage_fuel_tank_mass_properties_input = vehicle.mass_properties['inputs']['fuselage_fuel_tank'].inputs
-    fuselage_fuel_tank_mass_properties_input['fill_level'] = fill_level
-    plus_3g_mass_properties = vehicle.mass_properties.evaluate(
-        overwrite=[vehicle.airframe['wing'], beam_outputs['mass_properties']],
-        dynamic_inputs = [
-            mass_properties['dynmaic_mass_properties']['inputs']['fuselage_fuel_tank']['fill_level'] = fill_level
-        ]
-    )
-
-    # option 3
-    plus_3g_mass_properties = vehicle.mass_properties.evaluate(
-        overwrite=[vehicle.airframe['wing'], beam_outputs['mass_properties']],
-        dynamic_inputs=[wing_tank_fill_level, fuselage_tank_fill_level]
-    )
 
 
 def define_condition_analysis(conditions):
