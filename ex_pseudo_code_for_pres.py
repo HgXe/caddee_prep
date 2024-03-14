@@ -174,8 +174,8 @@ def define_conditions():
 
     # Hover
     hover_condition = cd.design_condition.Hover(
-        atmosphere_model=cd.atmos.SimpleAtmosphere,
-        eom_model=cd.eom.6DOFGeneralReferenceFrame,
+        atmosphere_model=cd.atmos.SimpleAtmosphere(),
+        eom_model=cd.eom.SimpleForceEquilibrium(),
     )
     lpc_conditions.add_condition('hover', hover_condition)
     hover_condition.inputs['time'] = system_model.create_input()
@@ -189,19 +189,17 @@ def define_conditions():
     # Transition
     # NOTE: transition requires more flexibility, so user can specify ac-states directly
     transition = cd.design_condition.Transition(
-        atmosphere__model=cd.atmos.AdvancedAtmosphereModel,
-        eom_model=cd.eom.6DOFGeneralReferenceFrame
+        atmosphere_model=cd.atmos.AdvancedAtmosphereModel(),
+        eom_model=cd.eom.2DOFGeneralReferenceFrame(),
     )
     lpc_conditions.add_condition('transition', transition)
-    
-    cd.design_condition.TransitionInputs()
     transition.inputs['u'] = system_model.create_input(...)
     transition.inputs['v'] = system_model.create_input()
     transition.inputs['w'] = system_model.create_input()
     transition.inputs['p'] = system_model.create_input()
     transition.inputs['q'] = system_model.create_input()
     transition.inputs['r'] = system_model.create_input()
-    transition_variable_group = transition.evaluate(transition_inputs)
+    transition.evaluate_atmosphere()
 
     # Climb
     climb = system_model.register_submodel(cd.ClimbCondition())
@@ -603,8 +601,53 @@ def define_cruise_condition(condition):
     
     vlm_outputs = cruise_aero_solver.evaluate(cruise_aero_inputs)
 
+import numpy as np
 
-def define_post_analysis():
-    pass
+def define_post_analysis(conditions):
+# Get the powertrain from the base configuration
+base_config = conditions.base_config
+powertrain = base_config['powertrain']
+powertrain.assemble()
+
+# Set up temporal discretization/interpolation
+mission_time = conditions.get_time_vector() # vector of size total num_nodes
+
+# Get the battery power profile from the power train via the different configurations
+battery_power = conditions.get_temporal_qois(
+    components=powertrain._components['battery'],
+    qois=powertrain.qois['power'],
+)
+
+# Fit temporal B-spline
+power_function_space = sifr.create_function_space(
+    name='power',
+    type='bspline',
+    shape=(10, ),
+    order=(2, )
+)
+
+power_function = power_function_space.fit_function(
+    mission_time,
+    battery_power, 
+)
+
+# Evaluate a smooth power profile
+time_interp = np.linsapce(mission_time[0], mission_time[-1], 100)
+power_interp = power_function.evaluate(time_interp)
+
+# Evaluate battery model
+dfn_battery_model = cd.battery.DFNBatteryModel()
+dfn_battery_model_inputs = cd.battery.DFNBatteryModelInputs()
+dfn_battery_model_inputs['power_profile'] = power_interp
+
+dfn_battery_model_outputs = dfn_battery_model.evaluate(dfn_battery_model_inputs)
+system_model.add_constraint(dfn_battery_model_outputs['temperature_profile'], upper=80.)
+
+
+
+
+
+
+
 
 def define_aero_dynamic_pre_calculations(): pass
