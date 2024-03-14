@@ -162,7 +162,7 @@ def define_vehicle_components(geometry):
     return vehicle
 
 
-def define_conditions():
+def define_conditions(manager):
     """
     Define the atmospheric/ operating environments for the design conditions
 
@@ -174,39 +174,39 @@ def define_conditions():
         lpc_design_environments (cd.eVTOLDesignEnvironments): The design environments for the eVTOL aircraft.
     """
 
-    lpc_conditions = cd.ConditionsManager()
+
 
     # Hover
-    hover_condition = cd.design_condition.Hover(
-        atmosphere_model=cd.atmos.SimpleAtmosphere(),
-        eom_model=cd.eom.SimpleForceEquilibrium(),
-    )
-    lpc_conditions.add_condition('hover', hover_condition)
-    hover_condition.inputs['time'] = system_model.create_input()
-    hover_condition.inputs['altitude'] = system_model.create_input()
-    hover_condition.evaluate_vehicle_states()
-    hover_condition.evaluate_atmosphere()
+
     
+    hover_condition = cd.Condition()
+    manager.conditions['hover'] = hover_condition
+    hover_condition.time = system_model.create_input(value=90)
+    hover_condition.states['altitude'] = system_model.create_input(value=0)
+    
+    acstates_model = system_model.register(cd.ac_states_parameterization.Hover())
+    atmos_model = system_model.register(cd.atmos.SimpleAtmosphere())
+
+    altitude = system_model.create_input()
+
+    hover_condition.vehicle_states = acstates_model.evaluate(altitude)
+    hover_condition.atmos = atmos_model.evaluate(altitude)
+
 
     # TODO: carry above structure to other conditions
 
     # Transition
     # NOTE: transition requires more flexibility, so user can specify ac-states directly
-    transition = cd.design_condition.Transition(
-        atmosphere_model=cd.atmos.AdvancedAtmosphereModel(),
-        eom_model=cd.eom.2DOFGeneralReferenceFrame(),
-    )
-    lpc_conditions.add_condition('transition', transition)
-    transition.inputs['u'] = system_model.create_input(...)
-    transition.inputs['v'] = system_model.create_input()
-    transition.inputs['w'] = system_model.create_input()
-    transition.inputs['p'] = system_model.create_input()
-    transition.inputs['q'] = system_model.create_input()
-    transition.inputs['r'] = system_model.create_input()
-    transition.evaluate_atmosphere()
+    transition = cd.Condition
+    manager.conditions['transition'] = transition
 
     # Climb
-    climb = system_model.register_submodel(cd.ClimbCondition())
+    climb = cd.Condition()
+    manager.conditions['climb'] = climb
+
+
+
+
     climb_inputs = cd.design_condition.ClimbInputs()
     climb_inputs['mach'] = system_model.create_input()
     climb_inputs['altitude'] = system_model.create_input()
@@ -214,11 +214,19 @@ def define_conditions():
     climb_variable_group = climb.evaluate(climb_inputs)
 
     # Cruise
-    cruise = cd.CruiseCondition()
+    cruise = cd.Condition()
+    manager.conditions['cruise'] = cruise
+    cruise_mach = system_model.create_input()
+    cruise_altitude = system_model.create_input()
+    cruise_range = system_model.create_input()
+
+    ac_states_model = system_model.register(cd.ac_states_parameterization.Cruise())
+    ac_states, time = ac_states_model.evaluate(cruise_mach, cruise_altitude, cruise_range)
+    condition.vehicle_states = ac_states
+    condition.time = time
+
     cruise_inputs = cd.design_condition.CruiseInputs()
-    cruise_inputs['mach'] = system_model.create_input()
-    cruise_inputs['altitude'] = system_model.create_input()
-    cruise_inputs['range'] = system_model.create_input()
+
     cruise_variable_group = cruise.evaluate(cruise_inputs)
 
 
@@ -245,15 +253,15 @@ def define_conditions():
 
     ### add conditions to mission plan ###
 
-    lpc_conditions.add_condition('hover_condition', hover_variable_group) 
-    lpc_conditions.add_condition('transition_condition', transition_variable_group)
-    lpc_conditions.add_condition('climb_condition', climb_variable_group)
-    lpc_conditions.add_condition('cruise_condition', cruise_variable_group)
+    manager.add_condition('hover_condition', hover_variable_group) 
+    manager.add_condition('transition_condition', transition_variable_group)
+    manager.add_condition('climb_condition', climb_variable_group)
+    manager.add_condition('cruise_condition', cruise_variable_group)
 
-    lpc_conditions.add_contingency_condition('oei_hover_condition', oei_hover_variable_group)
-    lpc_conditions.add_contingency_condition('plus_3g_sizing_condition', plus_3g_sizing_variable_group)
+    manager.add_contingency_condition('oei_hover_condition', oei_hover_variable_group)
+    manager.add_contingency_condition('plus_3g_sizing_condition', plus_3g_sizing_variable_group)
 
-    return lpc_conditions
+    return manager
 
 
 def define_configurations(vehicle, conditions):
