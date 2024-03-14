@@ -332,7 +332,8 @@ def define_meshes(vehicle):
 
 def define_mass_properties(conditions):
 
-    airframe = conditions.base_configuration['airframe']
+    vehicle = conditions.base_configuration
+    airframe = vehicle.comps['airframe']
 
     # Airframe 
     m4_regression_mass_model = cd.mass_properties.M4Regression()
@@ -444,16 +445,72 @@ def define_plus_3g_sizing_condition(condition):
     plus_3g_ac_states = condition.vehicle_states
     plus_3g_atmosphere = condition.atmosphere
 
+    # vlm to beam coupling (results saved to configration)
+    vlm_beam_coupling(condition)
+
+
+    # set wing mass using displaced wing
+
+    wing_beam_mesh = airframe.comps['wing'].meshes['beam']
+
+    beam_mass_model = system_model.register_submodel(aframe.BeamMassModel())
+    beam_mass_model_inputs = aframe.BeamMassModelInputs()
+    beam_mass_model_inputs['mesh'] = wing_beam_mesh
+    beam_mass_model_inputs['top_skin_thickness'] = airframe.comps['wing'].states['top_skin_thickness']
+    beam_mass_model_inputs['deformations'] = airframe.comps['wing'].states['beam_deformations']
+    ...
+    airframe.comps['wing'].mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
+
+    # set fuel tank fill level for mass computation
+    fill_level = 1.0
+    airframe.comps['fuselage'].comps['fuel_tank'].fill_level = fill_level
+
+    # compute mass properties
+    plus_3g_mass_properties = plus_3g_config.evaluate_mass_properties()
+
+
+    # bem solver for eom
+    rotor_force_function_space = airframe.comps['rotor'].function_spaces['force_function_space']
+
+    rotor_bem_mesh = airframe.comps['rotor'].meshes['bem']
+
+    bem_solver = system_model.register_submodel(lsdo_rotor.BEMModel(bem_parameters=...))
+    bem_inputs = lsdo_rotor.BEMInputs()
+    bem_inputs['rotor_mesh'] = rotor_bem_mesh
+    bem_inputs['ac_states'] = plus_3g_ac_states
+    bem_inputs['atmosphere'] = plus_3g_atmosphere
+
+    bem_outputs = bem_solver.evaluate(bem_inputs)
+
+    bem_function = rotor_force_function_space.fit_function(bem_outputs['forces'], rotor_bem_mesh)
+    airframe.comps['rotor'].states['force_funciton'] = bem_function
+
+    # equations of motion
+    plus_3g_sizing_eom_model = condition.eom_model
+    plus_3g_sizing_eom_model_inputs = condition.eom_model_inputs
+    plus_3g_sizing_eom_model_inputs['vehicle_mass_properties'] = plus_3g_mass_properties
+    plus_3g_sizing_eom_model_inputs['ac_states'] = plus_3g_ac_states
+    plus_3g_sizing_eom_model_inputs['aero_prop_forces'] = [airframe.states['forces'], bem_outputs['forces']]
+
+    plus_3g_sizing_eom_model_outputs = plus_3g_sizing_eom_model.evaluate(plus_3g_sizing_eom_model_inputs)
+    system_model.add_constraint(plus_3g_sizing_eom_model_outputs['net_forces'], equals=0., scaler=1e-1)
+
+
+def vlm_beam_coupling(condition):
+    plus_3g_config = condition.configuration
+    airframe = plus_3g_config.comps['airframe']
+
+    plus_3g_ac_states = condition.vehicle_states
+    plus_3g_atmosphere = condition.atmosphere
+
     # function spaces
     wing_force_function_space = airframe.comps['wing'].function_spaces['force_function_space']
     wing_displacement_function_space = airframe.comps['wing'].function_spaces['displacement_function_space']
-    rotor_force_function_space = airframe.comps['rotor'].function_spaces['force_function_space']
 
     # meshes
     wing_vlm_mesh = airframe.comps['wing'].meshes['vlm_camber_surface']
     tail_vlm_mesh = airframe.comps['tail'].meshes['vlm_camber_surface']
     wing_beam_mesh = airframe.comps['wing'].meshes['beam']
-    rotor_bem_mesh = airframe.comps['rotor'].meshes['bem']
 
     # implicit variables
     vlm_wing_mesh_displacement_in = system_model.create_implicit_variable(shape=(wing_vlm_mesh.shape))
@@ -471,6 +528,7 @@ def define_plus_3g_sizing_condition(condition):
     cruise_aero_inputs['atmosphere'] = plus_3g_atmosphere
 
     vlm_outputs = cruise_aero_solver.evaluate(cruise_aero_inputs)
+    airframe.states['vlm_forces'] = vlm_outputs['forces']
 
     # map vlm forces to beam
     vlm_oml_nodal_forces = idw_map(
@@ -499,6 +557,7 @@ def define_plus_3g_sizing_condition(condition):
     wing_structural_inputs['forces'] = beam_wing_mesh_forces_in
 
     beam_outputs = wing_structural_solver.evaluate(wing_structural_inputs)
+    airframe.comps['wing'].states['beam_deformations'] = beam_outputs['deformations']
 
     # map beam to vlm
     beam_oml_nodal_displacements = idw_map(
@@ -530,39 +589,6 @@ def define_plus_3g_sizing_condition(condition):
     solver.add_residual(residual=force_residual, state=beam_wing_mesh_forces_in)
     solver.run()
 
-    # compute mass properties for EOM
-    fill_level = 1.0
-    airframe.comps['fuselage'].comps['fuel_tank'].fill_level = fill_level
-
-    beam_mass_model = system_model.register_submodel(aframe.BeamMassModel())
-    beam_mass_model_inputs = aframe.BeamMassModelInputs()
-    beam_mass_model_inputs['mesh'] = wing_beam_mesh
-    beam_mass_model_inputs['top_skin_thickness'] = airframe['wing']['top_skin_thickness']
-    ...
-    airframe.comps['wing'].mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
-
-    plus_3g_mass_properties = plus_3g_config.evaluate_mass_properties()
-
-    # bem solver 
-    bem_solver = system_model.register_submodel(lsdo_rotor.BEMModel(bem_parameters=...))
-    bem_inputs = lsdo_rotor.BEMInputs()
-    bem_inputs['rotor_mesh'] = rotor_bem_mesh
-    bem_inputs['ac_states'] = plus_3g_ac_states
-    bem_inputs['atmosphere'] = plus_3g_atmosphere
-
-    bem_outputs = bem_solver.evaluate(bem_inputs)
-
-    bem_coefficients = rotor_force_function_space.fit_function_coefficients(bem_outputs['forces'], rotor_bem_mesh)
-
-    # equations of motion
-    plus_3g_sizing_eom_model = condition.eom_model
-    plus_3g_sizing_eom_model_inputs = condition.eom_model_inputs
-    plus_3g_sizing_eom_model_inputs['vehicle_mass_properties'] = plus_3g_mass_properties
-    plus_3g_sizing_eom_model_inputs['ac_states'] = plus_3g_ac_states
-    plus_3g_sizing_eom_model_inputs['aero_prop_forces'] = [vlm_outputs['forces'], bem_outputs['forces']]
-
-    plus_3g_sizing_eom_model_outputs = plus_3g_sizing_eom_model.evaluate(plus_3g_sizing_eom_model_inputs)
-    system_model.add_constraint(plus_3g_sizing_eom_model_outputs['net_forces'], equals=0., scaler=1e-1)
 
 def define_oei_hover_condition(condition):
     pass
