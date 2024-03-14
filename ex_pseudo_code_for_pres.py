@@ -18,32 +18,36 @@ geometry.refit(parallelize=True)
 system_model = csdl.Model()
 
 def main_script():
+    vehicle = cd.Vehicle(geometry=geometry)
+    manager = cd.Manager()
+    manager.set_default_configuration(vehicle)
+    
     # define the vehicle 
-    vehicle = define_vehicle_components(geometry)
+    define_vehicle_components(manager)
 
     # define conditions
-    conditions = define_conditions()
+    define_conditions(manager)
     
     # define configurations
-    define_configurations(vehicle, conditions)
+    define_configurations(manager)
 
     # define function spaces
-    define_function_spaces(vehicle)
+    define_function_spaces(manager)
 
     # define meshes
-    define_meshes(vehicle)
+    define_meshes(manager)
 
     # define condition-independent analysis --> basically just mass properties
-    define_mass_properties(conditions)
+    define_mass_properties(manager)
 
     # optional
-    define_aero_dynamic_pre_calculations(conditions)
+    define_aero_dynamic_pre_calculations(manager)
 
     # define condition analysis
-    define_condition_analysis(conditions)
+    define_condition_analysis(manager)
 
     # define post-analysis
-    define_post_analysis(conditions)
+    define_post_analysis(manager)
 
     return 
 
