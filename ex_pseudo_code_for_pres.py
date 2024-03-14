@@ -438,23 +438,22 @@ def define_plus_3g_sizing_condition(condition):
     """
     Defines a structural sizing condition for a static +3g pull-up
     """
-    condition = 12
     plus_3g_config = condition.configuration
-    airframe = plus_3g_config['airframe']
+    airframe = plus_3g_config.comps['airframe']
 
     plus_3g_ac_states = condition.vehicle_states
     plus_3g_atmosphere = condition.atmosphere
 
     # function spaces
-    wing_force_function_space = airframe['wing'].function_spaces['force_function_space']
-    wing_displacement_function_space = airframe['wing'].function_spaces['displacement_function_space']
-    rotor_force_function_space = airframe['rotor'].function_spaces['force_function_space']
+    wing_force_function_space = airframe.comps['wing'].function_spaces['force_function_space']
+    wing_displacement_function_space = airframe.comps['wing'].function_spaces['displacement_function_space']
+    rotor_force_function_space = airframe.comps['rotor'].function_spaces['force_function_space']
 
     # meshes
-    wing_vlm_mesh = airframe['wing'].meshes['vlm_camber_surface']
-    tail_vlm_mesh = airframe['tail'].meshes['vlm_camber_surface']
-    wing_beam_mesh = airframe['wing'].meshes['beam']
-    rotor_bem_mesh = airframe['rotor'].meshes['bem']
+    wing_vlm_mesh = airframe.comps['wing'].meshes['vlm_camber_surface']
+    tail_vlm_mesh = airframe.comps['tail'].meshes['vlm_camber_surface']
+    wing_beam_mesh = airframe.comps['wing'].meshes['beam']
+    rotor_bem_mesh = airframe.comps['rotor'].meshes['bem']
 
     # implicit variables
     vlm_wing_mesh_displacement_in = system_model.create_implicit_variable(shape=(wing_vlm_mesh.shape))
@@ -477,19 +476,19 @@ def define_plus_3g_sizing_condition(condition):
     vlm_oml_nodal_forces = idw_map(
         vlm_outputs['nodal_forces'], 
         vlm_outputs['collocation_points'], 
-        airframe['wing']['oml_mesh']
+        airframe.comps['wing'].discretizaton['oml_mesh']
     )
     wing_force_coefficients = wing_force_function_space.fit_function_coefficients(
         vlm_oml_nodal_forces, 
-        airframe['wing']['oml_mesh_parametric']
+        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
     )
     beam_oml_nodal_forces = wing_force_function_space.evaluate(
         wing_force_coefficients, 
-        airframe['wing']['oml_mesh_parametric']
+        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
     )
     beam_wing_mesh_fores_out = idw_map(
         beam_oml_nodal_forces, 
-        airframe['wing']['oml_mesh_parametric'], 
+        airframe.comps['wing'].discretizaton['oml_mesh_parametric'], 
         wing_beam_mesh
     )
 
@@ -505,19 +504,19 @@ def define_plus_3g_sizing_condition(condition):
     beam_oml_nodal_displacements = idw_map(
         beam_outputs['displacements'], 
         wing_beam_mesh, 
-        airframe['wing']['oml_mesh']
+        airframe.comps['wing'].discretizaton['oml_mesh']
     ) 
     wing_displacement_coefficients = wing_displacement_function_space.fit_function_coefficients(
         beam_oml_nodal_displacements, 
-        airframe['wing']['oml_mesh_parametric']
+        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
     )
     vlm_oml_nodal_displacements = wing_displacement_function_space.evaluate(
         wing_displacement_coefficients, 
-        airframe['wing']['oml_mesh_parametric']
+        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
     )
     vlm_wing_mesh_displacement_out = idw_map(
         vlm_oml_nodal_displacements, 
-        airframe['wing']['oml_mesh_parametric'], 
+        airframe.comps['wing'].discretizaton['oml_mesh_parametric'], 
         wing_vlm_mesh
     )
 
@@ -533,14 +532,14 @@ def define_plus_3g_sizing_condition(condition):
 
     # compute mass properties for EOM
     fill_level = 1.0
-    airframe['fuselage']['fuel_tank'].fill_level = fill_level
+    airframe.comps['fuselage'].comps['fuel_tank'].fill_level = fill_level
 
     beam_mass_model = system_model.register_submodel(aframe.BeamMassModel())
     beam_mass_model_inputs = aframe.BeamMassModelInputs()
     beam_mass_model_inputs['mesh'] = wing_beam_mesh
     beam_mass_model_inputs['top_skin_thickness'] = airframe['wing']['top_skin_thickness']
     ...
-    airframe['wing'].mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
+    airframe.comps['wing'].mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
 
     plus_3g_mass_properties = plus_3g_config.evaluate_mass_properties()
 
