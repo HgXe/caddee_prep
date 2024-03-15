@@ -178,19 +178,43 @@ def define_conditions(manager):
 
     # Hover
 
-    
+    # Initialize the condition and add it to the manager
     hover_condition = cd.Condition()
     manager.conditions['hover'] = hover_condition
+
+    # Set any known states
     hover_condition.time = system_model.create_input(value=90)
     hover_condition.states['altitude'] = system_model.create_input(value=0)
-    
-    acstates_model = system_model.register(cd.ac_states_parameterization.Hover())
+
+    # Assign vehicle states and atmosphere if fully known, otherwise do in analysis section
+    acstates_model = system_model.register(cd.aircraft.state_parameterization.Hover())
     atmos_model = system_model.register(cd.atmos.SimpleAtmosphere())
+    # Evaluation of the ac states and the atmosphere can happen when defining the analysis (or here)
+    hover_condition.vehicle_states = acstates_model.evaluate(hover_condition.states['altitude'])
+    hover_condition.atmos = atmos_model.evaluate(hover_condition.states['altitude'])
 
-    altitude = system_model.create_input()
 
-    hover_condition.vehicle_states = acstates_model.evaluate(altitude)
-    hover_condition.atmos = atmos_model.evaluate(altitude)
+    # hover_condition = cd.HoverCondition(
+    #     atmosphere_model=cd.SimplAtmosphere()
+    # )
+
+    # hover_altitude = system_model.create_input(val=90)
+    # hover_time = system_model.create_input(val=120)
+
+    # hover_ac_states, hover_atmos = hover_condition.evaluate(
+    #     time=hover_time,
+    #     altitude=hover_altitude,
+    # )
+
+
+
+
+
+
+
+
+
+
 
 
     # TODO: carry above structure to other conditions
@@ -204,7 +228,9 @@ def define_conditions(manager):
     climb = cd.Condition()
     manager.conditions['climb'] = climb
 
-
+    climb.states['mach'] = system_model.create_input(value=0.3)
+    climb.states['initial_altitude'] = system_model.create_input(value=1000)
+    climb.states['final_altitude'] = system_model.create_input(value=3000)
 
 
     climb_inputs = cd.design_condition.ClimbInputs()
@@ -270,9 +296,9 @@ def define_configurations(vehicle, conditions):
     # Hover configuration
     airframe = conditions['hover'].configuration['airframe']
     for lift_rotor in airframe['lift_rotors']:
-        lift_rotor.rpm = system_model.create_input(shape=(1, )) 
-        lift_rotor.x_tilt = system_model.create_input(shape=(1, )) 
-        lift_rotor.y_tilt = system_model.create_input(shape=(1, )) 
+        lift_rotor.states['rpm'] = system_model.create_input(shape=(1, )) 
+        lift_rotor.states['x_tilt'] = system_model.create_input(shape=(1, )) 
+        lift_rotor.states['y_tilt'] = system_model.create_input(shape=(1, )) 
         lift_rotor.blade_pitch = system_model.create_input(shape=(30, )) 
 
     # Transition configuration
@@ -448,7 +474,9 @@ def define_plus_3g_sizing_condition(condition):
     Defines a structural sizing condition for a static +3g pull-up
     """
     plus_3g_config = condition.configuration
+    meshes = condition.actuated_meshes
     airframe = plus_3g_config.comps['airframe']
+    wing = airframe.comps['wing']
 
     plus_3g_ac_states = condition.vehicle_states
     plus_3g_atmosphere = condition.atmosphere
@@ -458,16 +486,14 @@ def define_plus_3g_sizing_condition(condition):
 
 
     # set wing mass using displaced wing
-
-    wing_beam_mesh = airframe.comps['wing'].meshes['beam']
+    wing_beam_displaced_mesh = meshes['wing_beam'] + wing.states['beam_deformations']
 
     beam_mass_model = system_model.register_submodel(aframe.BeamMassModel())
     beam_mass_model_inputs = aframe.BeamMassModelInputs()
-    beam_mass_model_inputs['mesh'] = wing_beam_mesh
-    beam_mass_model_inputs['top_skin_thickness'] = airframe.comps['wing'].states['top_skin_thickness']
-    beam_mass_model_inputs['deformations'] = airframe.comps['wing'].states['beam_deformations']
+    beam_mass_model_inputs['mesh'] = wing_beam_displaced_mesh
+    beam_mass_model_inputs['top_skin_thickness'] = wing.states['top_skin_thickness']
     ...
-    airframe.comps['wing'].mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
+    wing.mass_properties = beam_mass_model.evaluate(beam_mass_model_inputs)
 
     # set fuel tank fill level for mass computation
     fill_level = 1.0
@@ -476,11 +502,9 @@ def define_plus_3g_sizing_condition(condition):
     # compute mass properties
     plus_3g_mass_properties = plus_3g_config.evaluate_mass_properties()
 
-
     # bem solver for eom
     rotor_force_function_space = airframe.comps['rotor'].function_spaces['force_function_space']
-
-    rotor_bem_mesh = airframe.comps['rotor'].meshes['bem']
+    rotor_bem_mesh = meshes['rotor_bem']
 
     bem_solver = system_model.register_submodel(lsdo_rotor.BEMModel(bem_parameters=...))
     bem_inputs = lsdo_rotor.BEMInputs()
@@ -494,8 +518,8 @@ def define_plus_3g_sizing_condition(condition):
     airframe.comps['rotor'].states['force_funciton'] = bem_function
 
     # equations of motion
-    plus_3g_sizing_eom_model = condition.eom_model
-    plus_3g_sizing_eom_model_inputs = condition.eom_model_inputs
+    plus_3g_sizing_eom_model = cd.eom.6DOFGeneralReferenceFrame()
+    plus_3g_sizing_eom_model_inputs = cd.eom.6DOFGeneralReferenceFrameInputs()
     plus_3g_sizing_eom_model_inputs['vehicle_mass_properties'] = plus_3g_mass_properties
     plus_3g_sizing_eom_model_inputs['ac_states'] = plus_3g_ac_states
     plus_3g_sizing_eom_model_inputs['aero_prop_forces'] = [airframe.states['forces'], bem_outputs['forces']]
@@ -506,22 +530,23 @@ def define_plus_3g_sizing_condition(condition):
 
 def vlm_beam_coupling(condition):
     plus_3g_config = condition.configuration
+    meshes = condition.actuated_meshes
     airframe = plus_3g_config.comps['airframe']
+    wing = airframe.comps['wing']
 
     plus_3g_ac_states = condition.vehicle_states
     plus_3g_atmosphere = condition.atmosphere
 
     # function spaces
-    wing_force_function_space = airframe.comps['wing'].function_spaces['force_function_space']
-    wing_displacement_function_space = airframe.comps['wing'].function_spaces['displacement_function_space']
+    wing_force_function_space = wing.function_spaces['force_function_space']
+    wing_displacement_function_space = wing.function_spaces['displacement_function_space']
 
     # meshes
-    wing_vlm_mesh = airframe.comps['wing'].meshes['vlm_camber_surface']
-    tail_vlm_mesh = airframe.comps['tail'].meshes['vlm_camber_surface']
-    wing_beam_mesh = airframe.comps['wing'].meshes['beam']
+    vlm_mesh = meshes['vlm_lifting_surfaces']
+    wing_beam_mesh = meshes['beam_wing']
 
     # implicit variables
-    vlm_wing_mesh_displacement_in = system_model.create_implicit_variable(shape=(wing_vlm_mesh.shape))
+    vlm_wing_mesh_displacement_in = system_model.create_implicit_variable(shape=(wing.discretizations['vlm'].shape))
     beam_wing_mesh_forces_in = system_model.create_implicit_variable(shape=(wing_beam_mesh.shape))
 
     # map for force and displacement transfer
@@ -530,8 +555,8 @@ def vlm_beam_coupling(condition):
     # vlm solver
     cruise_aero_solver = system_model.register_submodel(vast.SteadyVLM(vlm_parameters=...))
     cruise_aero_inputs = vast.SteadyVLMInputs()
-    cruise_aero_inputs['meshes_for_lifting_surfaces'] = [wing_vlm_mesh, tail_vlm_mesh]
-    cruise_aero_inputs['mesh_displacements'] = [vlm_wing_mesh_displacement_in, None]
+    cruise_aero_inputs['meshes'] = vlm_mesh
+    cruise_aero_inputs['surface_mesh_displacements'] = [vlm_wing_mesh_displacement_in, None]
     cruise_aero_inputs['ac_states'] = plus_3g_ac_states
     cruise_aero_inputs['atmosphere'] = plus_3g_atmosphere
 
@@ -542,19 +567,19 @@ def vlm_beam_coupling(condition):
     vlm_oml_nodal_forces = idw_map(
         vlm_outputs['nodal_forces'], 
         vlm_outputs['collocation_points'], 
-        airframe.comps['wing'].discretizaton['oml_mesh']
+        wing.discretizaton['oml_mesh']
     )
     wing_force_coefficients = wing_force_function_space.fit_function_coefficients(
         vlm_oml_nodal_forces, 
-        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
+        wing.discretizaton['oml_mesh_parametric']
     )
     beam_oml_nodal_forces = wing_force_function_space.evaluate(
         wing_force_coefficients, 
-        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
+        wing.discretizaton['oml_mesh_parametric']
     )
     beam_wing_mesh_fores_out = idw_map(
         beam_oml_nodal_forces, 
-        airframe.comps['wing'].discretizaton['oml_mesh_parametric'], 
+        wing.discretizaton['oml_mesh_parametric'], 
         wing_beam_mesh
     )
 
@@ -565,26 +590,26 @@ def vlm_beam_coupling(condition):
     wing_structural_inputs['forces'] = beam_wing_mesh_forces_in
 
     beam_outputs = wing_structural_solver.evaluate(wing_structural_inputs)
-    airframe.comps['wing'].states['beam_deformations'] = beam_outputs['deformations']
+    wing.states['beam_deformations'] = beam_outputs['deformations']
 
     # map beam to vlm
     beam_oml_nodal_displacements = idw_map(
         beam_outputs['displacements'], 
         wing_beam_mesh, 
-        airframe.comps['wing'].discretizaton['oml_mesh']
+        wing.discretizaton['oml_mesh']
     ) 
-    wing_displacement_coefficients = wing_displacement_function_space.fit_function_coefficients(
+    wing_displacement_function = wing_displacement_function_space.fit_function(
         beam_oml_nodal_displacements, 
-        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
+        wing.discretizaton['oml_mesh_parametric']
     )
-    vlm_oml_nodal_displacements = wing_displacement_function_space.evaluate(
-        wing_displacement_coefficients, 
-        airframe.comps['wing'].discretizaton['oml_mesh_parametric']
+    wing.states['displacement_function'] = wing_displacement_function
+    vlm_oml_nodal_displacements = wing_displacement_function.evaluate(
+        wing.discretizaton['oml_mesh_parametric']
     )
     vlm_wing_mesh_displacement_out = idw_map(
         vlm_oml_nodal_displacements, 
-        airframe.comps['wing'].discretizaton['oml_mesh_parametric'], 
-        wing_vlm_mesh
+        wing.discretizaton['oml_mesh_parametric'], 
+        wing.discretizations['vlm']
     )
 
     # define aero-structural residuals
