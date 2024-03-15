@@ -18,37 +18,36 @@ geometry.refit(parallelize=True)
 system_model = csdl.Model()
 
 def main_script():
+    vehicle = cd.Vehicle(geometry=geometry)
+    manager = cd.Manager()
+    manager.set_default_configuration(vehicle)
+    
     # define the vehicle 
-    vehicle = define_vehicle_components(geometry)
+    define_vehicle_components(manager)
 
     # define conditions
-    conditions = define_conditions()
+    define_conditions(manager)
     
     # define configurations
-    define_configurations(vehicle, conditions)
+    define_configurations(manager)
 
     # define function spaces
-    define_function_spaces(vehicle)
+    define_function_spaces(manager)
 
     # define meshes
-    define_meshes(vehicle)
+    define_meshes(manager)
 
     # define condition-independent analysis --> basically just mass properties
-    define_mass_properties(conditions)
+    define_mass_properties(manager)
 
     # optional
-    define_aero_dynamic_pre_calculations()
+    define_aero_dynamic_pre_calculations(manager)
 
     # define condition analysis
-    define_condition_analysis(conditions)
+    define_condition_analysis(manager)
 
     # define post-analysis
-    define_post_analysis(conditions)
-
-    
-
-    
-
+    define_post_analysis(manager)
 
     return 
 
@@ -288,18 +287,22 @@ def define_conditions():
     return lpc_conditions
 
 
-def define_configurations(vehicle, conditions):
+def define_configurations(manager):
     """
     Define the configurations for the vehicle based on the conditions
     """
 
+    ### CURRENT API
+
     # Define the configurations for the vehicle
+    conditions = manager.conditions
+    vehicle = manager.vehicle
 
     conditions.set_base_configuration(vehicle)
 
     # Hover configuration
     config = conditions['hover'].configuration
-    for lift_rotor in config['airframe']['lift_rotors']:
+    for lift_rotor in config['airframe'].comps['lift_rotors']:
         lift_rotor.rpm = system_model.create_input(shape=(1, )) # Controls rotor speed
         lift_rotor.x_tilt = system_model.create_input(shape=(1, )) # Controls disk tilt angle (collective)
         lift_rotor.y_tilt = system_model.create_input(shape=(1, )) # Controls disk tilt angle (collective)
@@ -309,11 +312,56 @@ def define_configurations(vehicle, conditions):
     # Transition configuration
     config = conditions['transition'].configuration
     num_nodes = conditions['transition'].num_nodes
-    for lift_rotor in config['airframe']['lift_rotors']:
+    for lift_rotor in config['airframe'].comps['lift_rotors']:
         lift_rotor.rpm = system_model.create_input(shape=(num_nodes, )) # Controls rotor speed
 
-    config['airframe']['wing']['flap_deflection'] = system_model.create_input(shape=(num_nodes, )) # Controls wing flap deflection
-    config['airframe']['tail']['elevator_deflection'] = system_model.create_input(shape=(num_nodes, )) # Controls elevator deflection
+    config['airframe'].comps['wing'].flap_deflection = system_model.create_input(shape=(num_nodes, )) # Controls wing flap deflection
+    config['airframe'].comps['tail'].elevator_deflection = system_model.create_input(shape=(num_nodes, )) # Controls elevator deflection
+
+    # NOTE: concerns with the current api
+    #   - The abstraction of the configuration creation upon making conditions makes it less obvious that copies of the gometry are being created
+    #   - Users may interpret accessing components and their properites on the component directly as changing the base configuration
+
+
+    ### NEW API suggestions
+    # Hover
+    # ------Option 1
+    vehicle.comps['airframe'].comps['wing'].flap_deflection['hover'] = 5.
+    vehicle.comps['airframe'].comps['tail'].flap_deflection['hover'] = 5.
+
+    for lift_rotor in vehicle.comps['airframe'].comps['lift_rotor']:
+        lift_rotor.rpm['hover'] = system_model.create_input()
+        lift_rotor.xtilt['hover'] = system_model.create_input()
+        lift_rotor.ytilt['hover'] = system_model.create_input() # NOTE: this still implies the creation of a copy of the geometry under the hood
+
+
+    # later in the analysis
+    hover_condition = manager.conditions['hover']
+    
+    hover_vehicle_states = hover_condition.vehiclse_states
+    hover_atmos = hover_condition.atmosphere
+
+    lift_rotor_1 = manager.vehicle.comps['lift_rotors'].comps['lift_rotor_1']
+
+
+    from lsdo_rotor import BEM, BEMInputs
+    
+    bem_model_1 = BEM()
+    bem_model_inputs_1 = BEMInputs()
+    bem_model_inputs_1['rpm'] = lift_rotor_1.rpm['hover']
+    bem_model_inputs_1['thrust_vector'] = lift_rotor_1.discretizations['thrust_vector']
+    bem_model_inputs_1['ac_states'] = hover_vehicle_states
+
+    bem_model_outputs = bem_model_1.evaluate(bem_model_inputs_1)
+
+    # ------Option 2
+    hover_config = 
+    
+    vehicle.comps['airframe'].comps['wing'].
+
+    # 2c)
+
+
 
 def define_function_spaces(vehicle):
     """

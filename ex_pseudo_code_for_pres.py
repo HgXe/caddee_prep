@@ -256,16 +256,27 @@ def define_conditions():
     return lpc_conditions
 
 
-def define_configurations(vehicle, conditions):
-    conditions.set_base_configuration(vehicle)
-
+def define_configurations(manager):
+    vehicle = manager.vehicle
+    conditions = manager.conditions
+    
     # Hover configuration
-    airframe = conditions['hover'].configuration['airframe']
+    hover_config = vehicle.create_configuration('hover')
+    
+    # Set the condition's pointer to configuration 
+    # Option 1
+    conditions['hover'].configuration = hover_config
+    # Option 2
+    conditions['hover'].set_configuration(hover_config)
+
     for lift_rotor in airframe['lift_rotors']:
         lift_rotor.rpm = system_model.create_input(shape=(1, )) 
         lift_rotor.x_tilt = system_model.create_input(shape=(1, )) 
         lift_rotor.y_tilt = system_model.create_input(shape=(1, )) 
         lift_rotor.blade_pitch = system_model.create_input(shape=(30, )) 
+
+
+
 
     # Transition configuration
     airframe = conditions['transition'].configuration['airframe']
@@ -438,7 +449,6 @@ def define_plus_3g_sizing_condition(condition):
     """
     Defines a structural sizing condition for a static +3g pull-up
     """
-    condition = 12
     plus_3g_config = condition.configuration
     airframe = plus_3g_config['airframe']
 
