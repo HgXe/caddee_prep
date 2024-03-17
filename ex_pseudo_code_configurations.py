@@ -309,14 +309,33 @@ def define_configurations(manager):
         lift_rotor.blade_pitch = system_model.create_input(shape=(30, )) # Controls blade azimuthally (cyclic)
         # NOTE: Independent of the type of solver that will be specified later
 
+
+    # later in the analysis
+    hover_condition = manager.conditions['hover']
+    
+    hover_vehicle_states = hover_condition.vehicle_states
+    hover_atmos = hover_condition.atmosphere
+    config = hover_condition.configuration
+
+    lift_rotor_1 = config.comps['lift_rotors'].comps['lift_rotor_1']
+
+    from lsdo_rotor import BEM, BEMInputs
+    
+    bem_model_1 = BEM()
+    bem_model_inputs_1 = BEMInputs()
+    bem_model_inputs_1['rpm'] = lift_rotor_1.rpm
+    bem_model_inputs_1['rpm'] = lift_rotor_1.
+    bem_model_inputs_1['rpm'] = lift_rotor_1.rpm
+
+
     # Transition configuration
     config = conditions['transition'].configuration
     num_nodes = conditions['transition'].num_nodes
     for lift_rotor in config['airframe'].comps['lift_rotors']:
         lift_rotor.rpm = system_model.create_input(shape=(num_nodes, )) # Controls rotor speed
 
-    config['airframe'].comps['wing'].flap_deflection = system_model.create_input(shape=(num_nodes, )) # Controls wing flap deflection
-    config['airframe'].comps['tail'].elevator_deflection = system_model.create_input(shape=(num_nodes, )) # Controls elevator deflection
+    config.comps['airframe'].comps['wing'].flap_deflection = system_model.create_input(shape=(num_nodes, )) # Controls wing flap deflection
+    config.comps['airframe'].comps['tail'].elevator_deflection = system_model.create_input(shape=(num_nodes, )) # Controls elevator deflection
 
     # NOTE: concerns with the current api
     #   - The abstraction of the configuration creation upon making conditions makes it less obvious that copies of the gometry are being created
@@ -338,7 +357,7 @@ def define_configurations(manager):
     # later in the analysis
     hover_condition = manager.conditions['hover']
     
-    hover_vehicle_states = hover_condition.vehiclse_states
+    hover_vehicle_states = hover_condition.vehicle_states
     hover_atmos = hover_condition.atmosphere
 
     lift_rotor_1 = manager.vehicle.comps['lift_rotors'].comps['lift_rotor_1']
@@ -349,7 +368,7 @@ def define_configurations(manager):
     bem_model_1 = BEM()
     bem_model_inputs_1 = BEMInputs()
     bem_model_inputs_1['rpm'] = lift_rotor_1.rpm['hover']
-    bem_model_inputs_1['thrust_vector'] = lift_rotor_1.discretizations['thrust_vector']
+    bem_model_inputs_1['thrust_vector'] = lift_rotor_1.discretizations['thrust_vector']['hover']
     bem_model_inputs_1['ac_states'] = hover_vehicle_states
 
     bem_model_outputs = bem_model_1.evaluate(bem_model_inputs_1)
@@ -627,3 +646,100 @@ def define_cruise_condition(condition):
     cruise_aero_inputs['atmosphere'] = cruise_atmosphere
     
     vlm_outputs = cruise_aero_solver.evaluate(cruise_aero_inputs)
+
+
+
+# configs
+def vlm_beam_coupling(condition):
+    plus_3g_config = condition.configuration
+    meshes = condition.actuated_meshes
+    airframe = plus_3g_config.comps['airframe']
+    wing = airframe.comps['wing']
+
+    plus_3g_ac_states = condition.vehicle_states
+    plus_3g_atmosphere = condition.atmosphere
+
+    # function spaces
+    wing_force_function_space = wing.function_spaces['force_function_space']
+    wing_displacement_function_space = wing.function_spaces['displacement_function_space']
+
+    # meshes
+    vlm_mesh = meshes['vlm_lifting_surfaces']
+    wing_beam_mesh = meshes['beam_wing']
+
+    # implicit variables
+    vlm_wing_mesh_displacement_in = system_model.create_implicit_variable(shape=(wing.discretizations['vlm'].shape))
+    beam_wing_mesh_forces_in = system_model.create_implicit_variable(shape=(wing_beam_mesh.shape))
+
+    # map for force and displacement transfer
+    idw_map = system_model.register_submodel(sifr.IDWMap())
+
+    # vlm solver
+    cruise_aero_solver = system_model.register_submodel(vast.SteadyVLM(vlm_parameters=...))
+    cruise_aero_inputs = vast.SteadyVLMInputs()
+    cruise_aero_inputs['meshes'] = vlm_mesh
+    cruise_aero_inputs['surface_mesh_displacements'] = [vlm_wing_mesh_displacement_in, None]
+    cruise_aero_inputs['ac_states'] = plus_3g_ac_states
+    cruise_aero_inputs['atmosphere'] = plus_3g_atmosphere
+
+    vlm_outputs = cruise_aero_solver.evaluate(cruise_aero_inputs)
+    airframe.states['vlm_forces'] = vlm_outputs['forces']
+
+    # map vlm forces to beam
+    vlm_oml_nodal_forces = idw_map(
+        vlm_outputs['nodal_forces'], 
+        vlm_outputs['collocation_points'], 
+        wing.discretizaton['oml_mesh']
+    )
+    wing_force_coefficients = wing_force_function_space.fit_function_coefficients(
+        vlm_oml_nodal_forces, 
+        wing.discretizaton['oml_mesh_parametric']
+    )
+    beam_oml_nodal_forces = wing_force_function_space.evaluate(
+        wing_force_coefficients, 
+        wing.discretizaton['oml_mesh_parametric']
+    )
+    beam_wing_mesh_fores_out = idw_map(
+        beam_oml_nodal_forces, 
+        wing.discretizaton['oml_mesh_parametric'], 
+        wing_beam_mesh
+    )
+
+    # beam solver
+    wing_structural_solver = system_model.register_submodel(aframe.BeamModel(beam_parameters=...))
+    wing_structural_inputs = aframe.BeamInputs()
+    wing_structural_inputs['mesh'] = wing_beam_mesh
+    wing_structural_inputs['forces'] = beam_wing_mesh_forces_in
+
+    beam_outputs = wing_structural_solver.evaluate(wing_structural_inputs)
+    wing.states['beam_deformations'] = beam_outputs['deformations']
+
+    # map beam to vlm
+    beam_oml_nodal_displacements = idw_map(
+        beam_outputs['displacements'], 
+        wing_beam_mesh, 
+        wing.discretizaton['oml_mesh']
+    ) 
+    wing_displacement_function = wing_displacement_function_space.fit_function(
+        beam_oml_nodal_displacements, 
+        wing.discretizaton['oml_mesh_parametric']
+    )
+    wing.states['displacement_function'] = wing_displacement_function
+    vlm_oml_nodal_displacements = wing_displacement_function.evaluate(
+        wing.discretizaton['oml_mesh_parametric']
+    )
+    vlm_wing_mesh_displacement_out = idw_map(
+        vlm_oml_nodal_displacements, 
+        wing.discretizaton['oml_mesh_parametric'], 
+        wing.discretizations['vlm']
+    )
+
+    # define aero-structural residuals
+    displacement_residual = vlm_wing_mesh_displacement_out - vlm_wing_mesh_displacement_in
+    force_residual = beam_wing_mesh_fores_out - beam_wing_mesh_forces_in
+
+    # solve aero-structural residuals
+    solver = NewtonSolver()
+    solver.add_residual(residual=displacement_residual, state=vlm_wing_mesh_displacement_in)
+    solver.add_residual(residual=force_residual, state=beam_wing_mesh_forces_in)
+    solver.run()
