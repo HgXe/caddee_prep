@@ -117,30 +117,40 @@ def define_vehicle_components(manager):
     # NOTE: Might need to make a fuel tank component from OML or in OpenVSP if geometry changes
 
 
-    # Defining the powertrain (cd.Pwertrain inherits from Network)
+    # Defining the powertrain (cd.P0wertrain inherits from Network)
     powertrain = cd.Powertrain()
     vehicle.comps['powertrain'] = powertrain
 
     # batteries
-    battery_1 = cd.Battery()
-    battery_2 = cd.Battery()
+    battery_1 = cd.powertrain.battery.Battery()
+    battery_1.add_solver('low_fi_model', cd.powertrain.battery.EnergyBasedSizingModel())
+    battery_2 = cd.powertrain.battery.Battery()
+    battery_2.add_solver('high_fi_model', cd.powertrain.battery.DFNModel())
 
     # dc-dc converters
-    dc_dc_1 = cd.DCDCConverter()
-    dc_dc_2 = cd.DCDCConverter()
+    dc_dc_1 = cd.powertrain.converter.DCDCConverter()
+    dc_dc_1.add_solver('simple_dc_dc_1_model', cd.powertrain.converters.SimpleCoverterModel())
+    dc_dc_2 = cd.powertrain.converter.DCDCConverter()
+    dc_dc_2.add_solver('simple_dc_dc_2_model', cd.powertrain.converters.SimpleCoverterModel())
 
     # dc bus
-    dc_bus = cd.DCBus()
+    dc_bus = cd.powertrain.Bus.DCBus()
+    dc_bus.add_solver('low_fi_dc_bus_model', cd.powertrain.bus.SimpleBusModel())
+    dc_bus.add_solver('hi_fi_dc_bus_model', cd.powertrain.bus.AdvancedBusModel())
 
     # inverter
-    inverter = cd.Inverter()
+    inverter = cd.powertrain.inverter.Inverter()
     inverter.properties['failure_rate_coefficient'] = 1e-5
+    inverter.add_solver('simple_inverter_model', cd.powertrain.inverter.SimpleInverterModel())
 
     # motor
     motor = cd.Motor()
+    motor.add_solver('low_fi_ecm_model', SDSUMotorModel())
+    motor.add_solver('hi_fi_ecm_model', LucasHiFiModel())
 
     # rotor
     rotor = airframe.comps['lift_rotors'].comps['rotor0']
+    # NOTE: Here, we do not add a solver to the rotor since it sits on the edge of the powertrain 
 
     # Option 1: add all nodes at onces 
     powertrain.add_nodes_from([
@@ -154,12 +164,14 @@ def define_vehicle_components(manager):
     powertrain.add_node(dc_dc_1)
     # ...
 
-    # Recommended way? Battery to rotor or rotor to battery? Truly doesn't matter
+    # Recommended way? Battery to rotor or rotor to battery? Does it matter?
     powertrain.add_edge(rotor, motor)
     powertrain.add_edge(motor, inverter)
     powertrain.add_edge(inverter, dc_bus)
     powertrain.add_edge(dc_bus, dc_dc_1)
     powertrain.add_edge(dc_dc_1, battery_1)
+
+    # NOTE: if the powertrain analysis section is purely functional, there is no reason for a separate "Powertrain" class
 
     return vehicle
 
@@ -260,57 +272,94 @@ def define_configurations(manager):
     vehicle = manager.vehicle
     conditions = manager.conditions
     
+    ### Option 1: create vehicle configuration for different design conditions 
+
     # Hover configuration
     hover_config = vehicle.create_configuration('hover')
     
-    # Set the condition's pointer to configuration 
-    # Option 1
+    # Set the hover condition's pointer to configuration 
+    # Option 1a
     conditions['hover'].configuration = hover_config
-    # Option 2
+    # Option 1b
     conditions['hover'].set_configuration(hover_config)
 
-    for lift_rotor in airframe['lift_rotors']:
+    airframe_in_hover = hover_config.comps['airframe']
+
+    for lift_rotor in airframe_in_hover.comps['lift_rotors']:
+        # NOTE: tilt angles must be interpretable by geometry solver
         lift_rotor.states['rpm'] = system_model.create_input(shape=(1, )) 
         lift_rotor.states['x_tilt'] = system_model.create_input(shape=(1, )) 
         lift_rotor.states['y_tilt'] = system_model.create_input(shape=(1, )) 
-        lift_rotor.blade_pitch = system_model.create_input(shape=(30, )) 
-
-
-
+        lift_rotor.states['blade_pitch'] = system_model.create_input(shape=(30, )) 
+        # NOTE: the syntax states['rpm'] could easily be replaced with sates.rpm
 
     # Transition configuration
-    airframe = conditions['transition'].configuration['airframe']
+    transition_config = vehicle.create_configuration('transition')
+
+    # Set the transition condition's pointer to configuration
+    conditions['transition'].set_configuration(transition_config)
+
+    airframe_in_transition = transition_config.comps['airframe']
+
+    # NOTE: num_nodes is set upstream when defining the conditions; alternatively, it might be possible to 
+    # get rid of num_nodes and determine it based on the shape of the inputs
     num_nodes = conditions['transition'].num_nodes
-    for lift_rotor in airframe['lift_rotors']:
+    for lift_rotor in airframe_in_transition.comps['lift_rotors']:
         lift_rotor.rpm = system_model.create_input(shape=(num_nodes, )) 
 
-    airframe['wing'].flap_deflection = system_model.create_input(shape=(num_nodes, )) 
-    airframe['tail'].elevator_deflection = system_model.create_input(shape=(num_nodes, )) 
+    airframe_in_transition.comps['wing'].flap_deflection = system_model.create_input(shape=(num_nodes, )) 
+    airframe_in_transition.comps['tail'].elevator_deflection = system_model.create_input(shape=(num_nodes, )) 
 
-def define_function_spaces(vehicle):
-    vehicle['airframe']['wing'].create_function_space(
+
+    ### Option 2: "Index" the component states at various levels to define different actuations in different conditions
+
+    # Option 2a: Conditions "axis" is discretized on the component states directly
+    for lfit_rotor in vehicle.comps['airframe'].comps['lfit_rotors']:
+        lift_rotor.states['hover']['rpm'] = system_model.create_input()
+        lift_rotor.states['hover']['tilt_x'] = system_model.create_input()
+        lift_rotor.states['hover']['tilt_y'] = system_model.create_input()
+        lift_rotor.states['hover']['blade_pitch'] = system_model.create_input()
+
+    # Option 2b: Conditions "axis" is discretized on the components themselves; NOTE: might get ambiguous with sub-and parents component
+    for lift_rotor in vehicle.comps['airframe'].comps['lift_rotors']['hover']:
+        lift_rotor.states['rpm'] = system_model.create_input()
+        lift_rotor.states['tilt_x'] = system_model.create_input()
+        lift_rotor.states['tilt_y'] = system_model.create_input()
+        lift_rotor.states['blade_pitch'] = system_model.create_input()
+
+    # Option 2c: Conditions "axis" is discretized on the vehicle; NOTE: This is essentially just option 1 (creating a configuration per condition)
+    for lift_rotor in vehicle['hover'].comps['airframe'].comps['lift_rotors']:
+        lift_rotor.states['rpm'] = system_model.create_input()
+        lift_rotor.states['tilt_x'] = system_model.create_input()
+        lift_rotor.states['tilt_y'] = system_model.create_input()
+        lift_rotor.states['blade_pitch'] = system_model.create_input()
+        
+def define_function_spaces(manager):
+    vehicle = manager.vehicle
+    
+    vehicle.comps['airframe'].comps['wing'].create_function_space(
         name='force', 
         type='idw', 
         shape=(5,5), 
         order=2
     )
-    vehicle['airframe']['wing'].create_function_space(
+    vehicle.comps['airframe'].comps['wing'].create_function_space(
         name='displacement', 
         type='bspline', 
         shape=(5,5), 
         order=2
     )
-    vehicle['airframe']['wing'].create_function_space(
+    vehicle.comps['airframe'].comps['wing'].create_function_space(
         name='pressure', 
         type='bspline', 
         shape=(5,5), 
         order=2
     )
 
-    vehicle['airframe']['tail'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
-    vehicle['airframe']['tail'].create_function_space(name='pressure', type='bspline', shape=(5,5), order=2)
+    vehicle.comps['airframe'].comps['tail'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
+    vehicle.comps['airframe'].comps['tail'].create_function_space(name='pressure', type='bspline', shape=(5,5), order=2)
 
-    vehicle['airframe']['rotor'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
+    vehicle.comps['airframe'].comps['rotor'].create_function_space(name='force', type='idw', shape=(5,5), order=2)
 
 def define_meshes(vehicle):
     airframe = vehicle['airframe']
@@ -341,19 +390,19 @@ def define_meshes(vehicle):
     beam_mesh = beam_mesher.evaluate(vehicle['airframe']['wing'], num_elements=20)
     vehicle['airframe']['wing'].add_mesh('beam', beam_mesh)
 
-def define_mass_properties(conditions):
-
-    vehicle = conditions.base_configuration
+def define_mass_properties(manager):
+    vehicle = manager.vehicle
+    conditions = manager.conditions
     airframe = vehicle.comps['airframe']
 
     # Airframe 
     m4_regression_mass_model = cd.mass_properties.M4Regression()
     m4_regression_mass_model_inputs = cd.mass_properties.M4RegressionInputs()
 
-    m4_regression_mass_model_inputs['wing_AR'] = airframe['wing'].AR 
-    m4_regression_mass_model_inputs['fuselage_length'] = airframe['fuselage'].length
-    m4_regression_mass_model_inputs['h_tail_area'] = airframe['h_tail'].area
-    m4_regression_mass_model_inputs['v_tail_area'] = airframe['v_tail'].area
+    m4_regression_mass_model_inputs['wing_AR'] = airframe.comps['wing'].AR 
+    m4_regression_mass_model_inputs['fuselage_length'] = airframe.comps['fuselage'].length
+    m4_regression_mass_model_inputs['h_tail_area'] = airframe.comps['h_tail'].area
+    m4_regression_mass_model_inputs['v_tail_area'] = airframe.comps['v_tail'].area
     m4_regression_mass_model_inputs['cruise_speed'] = conditions['cruise_condition'].cruise_speed
 
     airframe.mass_properties = m4_regression_mass_model.evaluate(m4_regression_mass_model_inputs)
@@ -368,9 +417,9 @@ def define_mass_properties(conditions):
     # Wing Fuel Tank
     wing_fuel_tank_mass_model = cd.mass_properties.dynamic.FuelTankMPModel()
     wing_fuel_tank_mass_model_inputs = cd.mass_properties.FuelTankMPModelInputs()
-    wing_fuel_tank_mass_model_inputs['volume'] = airframe['wing'].volume*0.5
+    wing_fuel_tank_mass_model_inputs['volume'] = airframe.comps['wing'].volume*0.5
     wing_fuel_tank_mass_model_inputs['empty_mass'] = system_model.create_input(value=0) # NOTE: assuming fuel tank is (part) of the wing
-    wing_fuel_tank_mass_model_inputs['empty_cg'] = airframe['wing'].cg_location
+    wing_fuel_tank_mass_model_inputs['empty_cg'] = airframe.comps['wing'].cg_location
     wing_fuel_tank_mass_model_inputs['fuel_mass'] = wing_fuel_tank_mass_model_inputs['volume']*density_of_fuel
 
     # NOTE: use bsplines (SIFR) to interpolate fuel mass proerties at fill level?
@@ -382,11 +431,11 @@ def define_mass_properties(conditions):
     # Fuselage Fuel Tank
     fuselage_fuel_tank_mass_model = cd.mass_properties.dynamic.FuelTankMPModel()
     fuselage_fuel_tank_mass_model_inputs = cd.mass_properties.FuelTankMPModelInputs()
-    fuselage_fuel_tank_mass_model_inputs['volume'] = airframe['fuselage']['fuel_tank'].volume
-    fuselage_fuel_tank_mass_model_inputs['empty_mass'] = airframe['fuselage']['fuel_tank'].surface_area*fuel_tank_skin_area_density
-    fuselage_fuel_tank_mass_model_inputs['empty_cg'] = airframe['fuselage']['fuel_tank'].geometric_center
-    fuselage_fuel_tank_mass_model_inputs['fuel_mass'] = airframe['fuselage']['fuel_tank'].volume*density_of_fuel
-    fuselage_fuel_tank_mass_model_inputs['fill_level'] = airframe['fuselage']['fuel_tank'].fill_level
+    fuselage_fuel_tank_mass_model_inputs['volume'] = airframe.comps['fuselage'].comps['fuel_tank'].volume
+    fuselage_fuel_tank_mass_model_inputs['empty_mass'] = airframe.comps['fuselage'].comps['fuel_tank'].surface_area*fuel_tank_skin_area_density
+    fuselage_fuel_tank_mass_model_inputs['empty_cg'] = airframe.comps['fuselage'].comps['fuel_tank'].geometric_center
+    fuselage_fuel_tank_mass_model_inputs['fuel_mass'] = airframe.comps['fuselage'].comps['fuel_tank'].volume*density_of_fuel
+    fuselage_fuel_tank_mass_model_inputs['fill_level'] = airframe.comps['fuselage'].comps['fuel_tank'].fill_level
     
     fuselage_fuel_tank_mass_properties = fuselage_fuel_tank_mass_model.evaluate(fuselage_fuel_tank_mass_model_inputs)
 
@@ -426,23 +475,23 @@ def define_mass_properties(conditions):
     )
 
 
-def define_condition_analysis(conditions):
+def define_condition_analysis(manager):
 
     ### off-design conditions ###
 
-    define_plus_3g_sizing_condition(conditions['plus_3g_sizing_condition'])
+    define_plus_3g_sizing_condition(manager.conditions['plus_3g_sizing_condition'])
 
-    define_oei_hover_condition(conditions['oei_hover_condition'])
+    define_oei_hover_condition(manager.conditions['oei_hover_condition'])
     
     ### on-design conditions ###
 
-    define_hover_condition(conditions['hover'])
+    define_hover_condition(manager.conditions['hover'])
 
-    define_transition_condition(conditions['transition'])
+    define_transition_condition(manager.conditions['transition'])
 
-    define_climb_condition(conditions['climb'])
+    define_climb_condition(manager.conditions['climb'])
 
-    define_cruise_condition(conditions['cruise'])
+    define_cruise_condition(manager.conditions['cruise'])
 
 
 
@@ -475,6 +524,7 @@ def define_plus_3g_sizing_condition(condition):
     # set fuel tank fill level for mass computation
     fill_level = 1.0
     airframe.comps['fuselage'].comps['fuel_tank'].fill_level = fill_level
+    airframe.comps['fuselage'].comps['fuel_tank'].mass_properties = fuel_tank_mass_model.evaluate()
 
     # compute mass properties
     plus_3g_mass_properties = plus_3g_config.evaluate_mass_properties()
@@ -603,8 +653,102 @@ def vlm_beam_coupling(condition):
 def define_oei_hover_condition(condition):
     pass
 
-def define_hover_condition(condition):
-    pass
+from lsdo_rotor import BEM, BEMInputs
+from lsdo_motor import MotorAnalysis, MotorAnalysisInputs
+
+def define_hover_condition(manager):
+    vehicle = manager.vechile
+    conditions = manager.conditions
+    
+    hover_condition = conditions['hover']
+    hover_vehicle_states = hover_condition.vehcile_states
+    hover_atmos = hover_condition.atmos
+
+
+    ### Option 1: use the created configuration
+    hover_config = hover_condition.configuration
+
+    for lift_rotor in hover_config.comps['airframe'].comps['lift_rotors']:
+        rpm = lift_rotor.states['rpm']
+        thrust_vector = lift_rotor.discretizations['thrust_vector'] # NOTE: no BEM "mesh" in this example
+        thrust_origin = lift_rotor.discretizations['thrust_origin']
+        blade_pitch = lift_rotor.discretizations['blade_pitch']
+
+        bem_inputs = BEMInputs()
+        bem_inputs['vehicle_states'] = hover_vehicle_states
+        bem_inputs['atmosphere'] = hover_atmos
+        bem_inputs['thrust_vector'] = thrust_vector
+        bem_inputs['thrust_origin'] = thrust_origin
+        bem_inputs['blade_pitch'] = blade_pitch
+        bem_inputs['rpm'] = rpm
+
+        bem_model = BEM()
+        bem_outputs = bem_model.evaluate(bem_inputs)
+
+        
+
+
+    ### Option 2: use the "conditions" axis of the compoonents' states
+    # Option 2a:
+    for lift_rotor in vehicle.comps['airframe'].comps['lift_rotors']:
+        rpm = lift_rotor.states['hover']['rpm']
+        thrust_vector = lift_rotor.discretizations['hover']['thrust_vector']
+        thrust_origin = lift_rotor.discretizations['hover']['thrust_origin']
+        blade_pitch = lift_rotor.discretizations['hover']['blade_pitch']
+
+    # Option 2b:
+    for lift_rotor in vehicle.comps['airframe'].comps['lift_rotors']['hover']:
+        rpm = lift_rotor.states['rpm']
+        thrust_vector = lift_rotor.discretizations['thrust_vector'] 
+        thrust_origin = lift_rotor.discretizations['thrust_origin']
+        blade_pitch = lift_rotor.discretizations['blade_pitch']
+
+    # Option 2c: NOTE: essentially option 1
+    for lift_rotor in vehicle['hover'].comps['airframe'].comps['lift_rotors']:
+        rpm = lift_rotor.states['rpm']
+        thrust_vector = lift_rotor.discretizations['thrust_vector'] 
+        thrust_origin = lift_rotor.discretizations['thrust_origin']
+        blade_pitch = lift_rotor.discretizations['blade_pitch']
+
+        bem_inputs = BEMInputs()
+        bem_inputs['vehicle_states'] = hover_vehicle_states
+        bem_inputs['atmosphere'] = hover_atmos
+        bem_inputs['thrust_vector'] = thrust_vector
+        bem_inputs['thrust_origin'] = thrust_origin
+        bem_inputs['blade_pitch'] = blade_pitch
+        bem_inputs['rpm'] = rpm
+
+        bem_model = BEM()
+        bem_outputs = bem_model.evaluate(bem_inputs)
+
+
+        # Options for storing data
+        # Option A: Storing data on the component (function already as states also; might be synergistic)
+        #   A1: directly accessing dictionary
+        lift_rotor.states[f'lift_rotor_{i}_outputs'] = bem_outputs
+        lift_rotor.states['hover'][f'lift_rotor_{i}_outputs'] = bem_outputs
+        #   A2: add_state method 
+        lift_rotor.add_state(f'lift_rotor_{i}_outputs', bem_outputs)
+        lift_rotor.add_state(name=f'lift_rotor_{i}_outputs', condition=hover_condition, state=bem_outputs)
+
+        # Option B: Storing data on condition; might be advantageous for cases where data from a solver spans multiple components (e.g., VLM)
+        #   B1: directly accessing solver data dictionary
+        hover_condition.solver_data[f'lift_rotor_{i}_outputs'] = bem_outputs
+        #   B2: add_solver_data method
+        hover_condition.add_solver_data(f'lift_rotor_{i}_outputs', bem_outputs)
+
+        # NOTE: This is one of the few cases where we should allow both. 
+
+
+        # Define the motor models
+        motor_analysis_inputs = MotorAnalysisInputs()
+        motor_analysis_inputs['rpm'] = rpm
+        motor_analysis_inputs['torque'] = bem_outputs['Q']
+
+        motor_analysis_model = MotorAnalysis()
+        motor_analysis_outputs = motor_analysis_model.evaluate(motor_analysis_inputs)
+        lift_motor.states['hover'][f'lift_motor_{i}_input_power'] = motor_analysis_outputs['input_power']
+
 
 def define_transition_condition(condition):
     pass
@@ -642,45 +786,47 @@ def define_cruise_condition(condition):
 
 import numpy as np
 
-def define_post_analysis(conditions):
-# Get the powertrain from the base configuration
-base_config = conditions.base_config
-powertrain = base_config['powertrain']
-powertrain.assemble()
+def define_post_analysis(manager):
+    conditions = manager.conditions
+    vehicle = manager.vehicle
+    
+    # Get the powertrain from the base configuration
+    powertrain = vehicle.comps['powertrain']
 
-# Set up temporal discretization/interpolation
-mission_time = conditions.get_time_vector() # vector of size total num_nodes
+    # Get the motor powers for each design condition
+    motor_components = [powertrain.comps['lift_motors'], powertrain.comps['pusher_motor']]
+    motor_powers = powertrain.extract_motor_power_per_condition(conditions, motor_components)
 
-# Get the battery power profile from the power train via the different configurations
-battery_power = conditions.get_temporal_qois(
-    components=powertrain._components['battery'],
-    qois=powertrain.qois['power'],
-)
+    # Set up temporal discretization/interpolation
+    mission_time = conditions.get_time_vector() # vector of size total num_nodes
 
-# Fit temporal B-spline
-power_function_space = sifr.create_function_space(
-    name='power',
-    type='bspline',
-    shape=(10, ),
-    order=(2, )
-)
+    # Fit temporal B-spline
+    power_function_space = sifr.create_function_space(
+        name='power',
+        type='bspline',
+        shape=(10, ),
+        order=(2, )
+    )
 
-power_function = power_function_space.fit_function(
-    mission_time,
-    battery_power, 
-)
+    motor_power_function = power_function_space.fit_function(
+        mission_time,
+        motor_powers, 
+    )
 
-# Evaluate a smooth power profile
-time_interp = np.linsapce(mission_time[0], mission_time[-1], 100)
-power_interp = power_function.evaluate(time_interp)
+    # Evaluate a smooth power profile
+    time_interp = np.linsapce(mission_time[0], mission_time[-1], 100)
+    motor_power_interp = motor_power_function.evaluate(time_interp)
 
-# Evaluate battery model
-dfn_battery_model = cd.battery.DFNBatteryModel()
-dfn_battery_model_inputs = cd.battery.DFNBatteryModelInputs()
-dfn_battery_model_inputs['power_profile'] = power_interp
+    powertrain.assemble_power_states(motor_power_interp)
+    battery_power = powertrain.comps['battery'].states['required_power_profile']
 
-dfn_battery_model_outputs = dfn_battery_model.evaluate(dfn_battery_model_inputs)
-system_model.add_constraint(dfn_battery_model_outputs['temperature_profile'], upper=80.)
+    # Evaluate battery model
+    dfn_battery_model = cd.battery.DFNBatteryModel()
+    dfn_battery_model_inputs = cd.battery.DFNBatteryModelInputs()
+    dfn_battery_model_inputs['power_profile'] = battery_power
+
+    dfn_battery_model_outputs = dfn_battery_model.evaluate(dfn_battery_model_inputs)
+    system_model.add_constraint(dfn_battery_model_outputs['temperature_profile'], upper=80.)
 
 
 
