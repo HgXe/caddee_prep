@@ -11,6 +11,14 @@ import lsdo_rotor
 import aframe
 
 
+class CADDEEContainer():
+    vehilce : cd.Component = None
+    states : cd.Data = None
+    conditions : dict = {}
+    meshes : dict = {}
+
+
+
 # Import and refit geometry 
 # could move to 'define_vehicle'
 geometry = lg.import_geometry(GEOMETRY_FILES_FOLDER / 'LPC_final_custom_blades.stp', parallelize=True)
@@ -172,22 +180,59 @@ def define_vehicle_components(caddee):
 
 
 def define_conditions(caddee):
+    caddee_states = caddee.states
+    # Question: is a Condition class still necessary?
     # Hover
 
-    # Initialize the condition and add it to the caddee
+    # Option  1: Keep condition as a sub-container (may contain useful, coondition-specific information)
+    # Initialize the condition and add it to caddee
     hover_condition = cd.Condition()
     caddee.conditions['hover'] = hover_condition
 
     # Set any known states
     hover_condition.time = csdl.create_input(value=90)
-    hover_condition.properties['altitude'] = csdl.create_input(value=0)
+    hover_condition.states['altitude'] = csdl.create_input(value=0)
 
     # Assign vehicle states and atmosphere if fully known, otherwise do in analysis section
     acstates_model = cd.aircraft.state_parameterization.Hover()
     atmos_model = cd.atmos.SimpleAtmosphere()
+    
     # Evaluation of the ac states and the atmosphere can happen when defining the analysis (or here)
-    hover_condition.vehicle_states = acstates_model.evaluate(hover_condition.states['altitude'])
-    hover_condition.atmos = atmos_model.evaluate(hover_condition.states['altitude'])
+    vehicle_states = acstates_model.evaluate(hover_condition.states['altitude'])
+    atmos = atmos_model.evaluate(hover_condition.states['altitude'])
+
+
+
+    my_state = states_container[condition, component]['state']
+
+def define_actuations(caddee):
+    # Example for defining/assigning states 
+    
+    # Assuming conditions and vehicel have been fully defined:
+    
+    # 1) Get the states container, conditions, and components from central caddee object
+    states_container = caddee.states_container
+
+    cruise = caddee.conditions['cruise']
+    climb = caddee.conditions['climb']
+
+    pusher_rotor = caddee.vehicle.comps['airframe'].comps['pusher_rotor']
+    h_tail = caddee.vehicle.comps['airframe'].comps['h_tail']
+
+    # 2) There are two (or more) options for defining states using the 3-D array
+    # Option 2a)
+    states_container[cruise, pusher_rotor]['rpm'] = csdl.create_input()
+    states_container[climb, h_tail]['elevator_deflection'] = csdl.create_input()
+
+    # Option 2b)
+    states_container.add_state(
+        condition=cruise,
+        component=pusher_rotor,
+        state_name='rpm',
+        state=csdl.create_input(),
+    )
+
+
 
 
     # Transition
