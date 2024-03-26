@@ -179,12 +179,16 @@ def define_vehicle_components(caddee):
     return vehicle
 
 
+
+# Question: is a Condition class still necessary?
+
+
+# Option  1: Keep condition as a sub-container (may contain useful, coondition-specific information)
 def define_conditions(caddee):
-    caddee_states = caddee.states
-    # Question: is a Condition class still necessary?
+    states_container = caddee.states_container
+
     # Hover
 
-    # Option  1: Keep condition as a sub-container (may contain useful, coondition-specific information)
     # Initialize the condition and add it to caddee
     hover_condition = cd.Condition()
     caddee.conditions['hover'] = hover_condition
@@ -198,12 +202,35 @@ def define_conditions(caddee):
     atmos_model = cd.atmos.SimpleAtmosphere()
     
     # Evaluation of the ac states and the atmosphere can happen when defining the analysis (or here)
-    vehicle_states = acstates_model.evaluate(hover_condition.states['altitude'])
-    atmos = atmos_model.evaluate(hover_condition.states['altitude'])
+    hover_condition.vehicle_states = acstates_model.evaluate(hover_condition.states['altitude'])
+    hover_condition.atmosphere = atmos_model.evaluate(hover_condition.states['altitude'])
+
+    # As an optional step, one could add the hover condition to the states container (across all components ":")
+    states_container['hover_condition', :] = hover_condition
 
 
+# Option 2: get rid of conditions class all togheter and directly add the sates to the general states container
+def define_conditions(caddee):
+    states_container = caddee.states_container
+    
+    # Hover
+    
+    # Create csdl variables for hover time and altitude
+    hover_time = csdl.create_input()
+    altitude = hover_time
 
-    my_state = states_container[condition, component]['state']
+    # Assign time and altitude as states to states container
+    states_container['hover_condition', :]['time'] = hover_time
+    states_container['hover_condition', :]['altitude'] = altitude
+
+    # Evaluate aircraft states and atmosphere and assign them to the states container
+    acstates_model = cd.aircraft.state_parameterization.Hover()
+    atmos_model = cd.atmos.SimpleAtmosphere()
+
+    states_container['hover_condition', :]['vehicle_states'] = acstates_model.evaluate(altitude)
+    states_container['hover_condition', :]['atmosphere'] = atmos_model.evaluate(altitude)
+    
+
 
 def define_actuations(caddee):
     # Example for defining/assigning states 
@@ -406,13 +433,13 @@ def define_meshes(vehicle):
     vlm_mesher = system_model.register_submodel(vast.VLMMesher())
 
     wing_vlm_camber_surface_mesh = vlm_mesher.evaluate(
-        airframe['wing'].geometry, 
-        num_chordwise_panels=20, 
+        airframe['wing'].geometry,
+        num_chordwise_panels=20,
         num_spanwise_panels=20
     )
     tail_vlm_camber_surface_mesh = vlm_mesher.evaluate(
-        airframe['tail'].geometry, 
-        num_chordwise_panels=10, 
+        airframe['tail'].geometry,
+        num_chordwise_panels=10,
         num_spanwise_panels=10
     )
     airframe['wing'].meshes['vlm_camber_surface'] = wing_vlm_camber_surface_mesh
