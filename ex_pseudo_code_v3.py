@@ -11,14 +11,6 @@ import lsdo_rotor
 import aframe
 
 
-class CADDEEContainer():
-    vehilce : cd.Component = None
-    states : cd.Data = None
-    conditions : dict = {}
-    meshes : dict = {}
-
-
-
 # Import and refit geometry 
 # could move to 'define_vehicle'
 geometry = lg.import_geometry(GEOMETRY_FILES_FOLDER / 'LPC_final_custom_blades.stp', parallelize=True)
@@ -179,85 +171,24 @@ def define_vehicle_components(caddee):
     return vehicle
 
 
-
-# Question: is a Condition class still necessary?
-
-
-# Option  1: Keep condition as a sub-container (may contain useful, coondition-specific information)
 def define_conditions(caddee):
-    states_container = caddee.states_container
-
+    conditions = caddee.conditions
     # Hover
 
-    # Initialize the condition and add it to caddee
+    # Initialize the condition and add it to the caddee
     hover_condition = cd.Condition()
     caddee.conditions['hover'] = hover_condition
 
     # Set any known states
     hover_condition.time = csdl.create_input(value=90)
-    hover_condition.states['altitude'] = csdl.create_input(value=0)
+    hover_condition.properties['altitude'] = csdl.create_input(value=0)
 
     # Assign vehicle states and atmosphere if fully known, otherwise do in analysis section
     acstates_model = cd.aircraft.state_parameterization.Hover()
     atmos_model = cd.atmos.SimpleAtmosphere()
-    
     # Evaluation of the ac states and the atmosphere can happen when defining the analysis (or here)
     hover_condition.vehicle_states = acstates_model.evaluate(hover_condition.states['altitude'])
-    hover_condition.atmosphere = atmos_model.evaluate(hover_condition.states['altitude'])
-
-    # As an optional step, one could add the hover condition to the states container (across all components ":")
-    states_container['hover_condition', :] = hover_condition
-
-
-# Option 2: get rid of conditions class all togheter and directly add the sates to the general states container
-def define_conditions(caddee):
-    states_container = caddee.states_container
-    
-    # Hover
-    
-    # Create csdl variables for hover time and altitude
-    hover_time = csdl.create_input()
-    altitude = hover_time
-
-    # Assign time and altitude as states to states container
-    states_container['hover_condition', :]['time'] = hover_time
-    states_container['hover_condition', :]['altitude'] = altitude
-
-    # Evaluate aircraft states and atmosphere and assign them to the states container
-    acstates_model = cd.aircraft.state_parameterization.Hover()
-    atmos_model = cd.atmos.SimpleAtmosphere()
-
-    states_container['hover_condition', :]['vehicle_states'] = acstates_model.evaluate(altitude)
-    states_container['hover_condition', :]['atmosphere'] = atmos_model.evaluate(altitude)
-    
-
-
-def define_actuations(caddee):
-    # Example for defining/assigning states 
-    
-    # Assuming conditions and vehicel have been fully defined:
-    
-    # 1) Get the states container, conditions, and components from central caddee object
-    states_container = caddee.states_container
-
-    cruise = caddee.conditions['cruise']
-    climb = caddee.conditions['climb']
-
-    pusher_rotor = caddee.vehicle.comps['airframe'].comps['pusher_rotor']
-    h_tail = caddee.vehicle.comps['airframe'].comps['h_tail']
-
-    # 2) There are two (or more) options for defining states using the 3-D array
-    # Option 2a)
-    states_container[cruise, pusher_rotor]['rpm'] = csdl.create_input()
-    states_container[climb, h_tail]['elevator_deflection'] = csdl.create_input()
-
-    # Option 2b)
-    states_container.add_state(
-        condition=cruise,
-        component=pusher_rotor,
-        state_name='rpm',
-        state=csdl.create_input(),
-    )
+    hover_condition.atmos = atmos_model.evaluate(hover_condition.states['altitude'])
 
 
 
@@ -335,9 +266,117 @@ def define_actuations(caddee):
     return
 
 
-def define_configurations(manager):
-    vehicle = manager.vehicle
-    conditions = manager.conditions
+def define_component_configurations(caddee):
+    vehicle = caddee.vehicle
+    conditions = caddee.conditions
+
+    ##### Option 1: Create configuration on the components in question directly 
+    #             (most clear and consistent in my opinion)
+
+    # Access the components you need
+    lift_rotors_components = vehicle.comps['airframe'].comps['lift_rotors'].comps
+    elevator = vehicle.comps['airframe'].comps['tail'].comps['elevator']
+
+    # Create configuration for the individual components rather than the entire vehicle
+    for lift_rotor in lift_rotors_components:
+        # Lift rotors in hover
+        lift_rotor_hover_config = lift_rotor.create_configuration('hover')
+        lift_rotor_hover_config.states['rpm'] = csdl.create_input(shape=(1, )) 
+        lift_rotor_hover_config.states['x_tilt'] = csdl.create_input(shape=(1, )) 
+        lift_rotor_hover_config.states['y_tilt'] = csdl.create_input(shape=(1, )) 
+        lift_rotor_hover_config.states['blade_pitch'] = csdl.create_input(shape=(30, )) 
+
+        # Lift rotors in transition
+        lift_rotor_transition_config = lift_rotor.create_configuration('transition')
+        lift_rotor_transition_config.states['rpm'] = csdl.create_input(shape=(10, )) 
+        lift_rotor_transition_config.states['x_tilt'] = csdl.create_input(shape=(10, )) 
+        lift_rotor_transition_config.states['y_tilt'] = csdl.create_input(shape=(10, )) 
+        lift_rotor_transition_config.states['blade_pitch'] = csdl.create_input(shape=(10, 30)) 
+    
+    # Elevator in transition 
+    elevator_transition_config = elevator.create_configuration('transition')
+    elevator_transition_config.states['deflection'] = csdl.create_input(shape=(10, ))
+
+    # Elevator in cruise
+    elevator_cruise_config = elevator.create_configuration('cruise')
+    elevator_cruise_config.states['deflection'] = csdl.create_input(shape=(1, ))
+
+    # NOTE: there is no need to add a specific component configuration to a condition
+    # In the analysis one could directly access the states for a specific configuration 
+    lift_rotors =  vehicle.comps['airframe'].comps['lift_rotors']
+    lift_rotor_1_hover_config = lift_rotors.comps['lift_rotor_1'].configs['hover']
+    lift_rotor_1_transition_config = lift_rotor.comps['lift_rotor_1'].configs['transition']
+
+
+    ##### Option 2: Create a configuration for the entire vehicle for each condition (as needed)
+    
+    # Hover vehicle configuration
+    vehicle_hover_config = vehicle.create_configuration('hover')
+    
+    lift_rotors_hover_config = vehicle_hover_config.comps['airframe'].comps['lift_rotors']
+    for lift_rotor_hover_config in lift_rotors_hover_config:
+        # NOTE: tilt angles must be interpretable by geometry solver
+        lift_rotor_hover_config.states['rpm'] = system_model.create_input(shape=(1, )) 
+        lift_rotor_hover_config.states['x_tilt'] = system_model.create_input(shape=(1, )) 
+        lift_rotor_hover_config.states['y_tilt'] = system_model.create_input(shape=(1, )) 
+        lift_rotor_hover_config.states['blade_pitch'] = system_model.create_input(shape=(30, )) 
+
+
+    # Transition vehicle configuration
+    vehicle_transition_config = vehicle.create_configuration('transition')
+    
+    lift_rotors_transition_config = vehicle_transition_config.comps['airframe'].comps['lift_rotors']
+    for lift_rotor_transition_config in lift_rotors_transition_config:
+        # NOTE: tilt angles must be interpretable by geometry solver
+        lift_rotor_transition_config.states['rpm'] = system_model.create_input(shape=(1, )) 
+        lift_rotor_transition_config.states['x_tilt'] = system_model.create_input(shape=(1, )) 
+        lift_rotor_transition_config.states['y_tilt'] = system_model.create_input(shape=(1, )) 
+        lift_rotor_transition_config.states['blade_pitch'] = system_model.create_input(shape=(30, ))
+
+    elevator_transition_config = vehicle_transition_config.comps['airframe'].comps['tail'].comps['evelator']
+    elevator_transition_config.states['deflection'] = csdl.create_input(shape=(1, ))
+
+    # Cruise vehicle configuration
+    vehicle_cruise_config = vehicle.create_configuration('cruise')
+
+    elevator_cruise_config = vehicle_cruise_config.comps['airframe'].comps['tail'].comps['evelator']
+    elevator_cruise_config.states['deflection'] = csdl.create_input(shape=(1, ))
+
+    ### COMMENTs: I (MR) find option 1 clearly better since in option 2 you still have the '.comps' syntax which
+    #             could be confusing (Prof. Hwang's point): there should only be one set of components but
+    #             if we have 'configuration.comps[].comps[]', it again implies we're creating copies.
+    #             As a rule, states should live on the configurations and e.g., 'airframe.comps['wing'].states'
+    #             should return an error. This is consistent with saying components should have one function space
+    #             per state, but the state function should live under the components configuration.
+
+
+
+    ### OLD Option 2: "Index" the component states at various levels to define different actuations in different conditions
+
+    # Option 2a: Conditions "axis" is discretized on the component states directly
+    for lfit_rotor in vehicle.comps['airframe'].comps['lfit_rotors']:
+        lift_rotor.states['hover']['rpm'] = system_model.create_input()
+        lift_rotor.states['hover']['tilt_x'] = system_model.create_input()
+        lift_rotor.states['hover']['tilt_y'] = system_model.create_input()
+        lift_rotor.states['hover']['blade_pitch'] = system_model.create_input()
+
+    # Option 2b: Conditions "axis" is discretized on the components themselves; NOTE: might get ambiguous with sub-and parents component
+    for lift_rotor in vehicle.comps['airframe'].comps['lift_rotors']['hover']:
+        lift_rotor.states['rpm'] = system_model.create_input()
+        lift_rotor.states['tilt_x'] = system_model.create_input()
+        lift_rotor.states['tilt_y'] = system_model.create_input()
+        lift_rotor.states['blade_pitch'] = system_model.create_input()
+
+    # Option 2c: Conditions "axis" is discretized on the vehicle; NOTE: This is essentially just option 1 (creating a configuration per condition)
+    for lift_rotor in vehicle['hover'].comps['airframe'].comps['lift_rotors']:
+        lift_rotor.states['rpm'] = system_model.create_input()
+        lift_rotor.states['tilt_x'] = system_model.create_input()
+        lift_rotor.states['tilt_y'] = system_model.create_input()
+        lift_rotor.states['blade_pitch'] = system_model.create_input()
+
+def define_component_configurations(caddee):
+    vehicle = caddee.vehicle
+    conditions = caddee.conditions
     
     ### Option 1: create vehicle configuration for different design conditions 
 
@@ -400,7 +439,8 @@ def define_configurations(manager):
         lift_rotor.states['tilt_x'] = system_model.create_input()
         lift_rotor.states['tilt_y'] = system_model.create_input()
         lift_rotor.states['blade_pitch'] = system_model.create_input()
-        
+
+
 def define_function_spaces(manager):
     vehicle = manager.vehicle
     
@@ -433,13 +473,13 @@ def define_meshes(vehicle):
     vlm_mesher = system_model.register_submodel(vast.VLMMesher())
 
     wing_vlm_camber_surface_mesh = vlm_mesher.evaluate(
-        airframe['wing'].geometry,
-        num_chordwise_panels=20,
+        airframe['wing'].geometry, 
+        num_chordwise_panels=20, 
         num_spanwise_panels=20
     )
     tail_vlm_camber_surface_mesh = vlm_mesher.evaluate(
-        airframe['tail'].geometry,
-        num_chordwise_panels=10,
+        airframe['tail'].geometry, 
+        num_chordwise_panels=10, 
         num_spanwise_panels=10
     )
     airframe['wing'].meshes['vlm_camber_surface'] = wing_vlm_camber_surface_mesh
@@ -853,9 +893,9 @@ def define_cruise_condition(condition):
 
 import numpy as np
 
-def define_post_analysis(manager):
-    conditions = manager.conditions
-    vehicle = manager.vehicle
+def define_post_analysis(caddee):
+    conditions = caddee.conditions
+    vehicle = caddee.vehicle
     
     # Get the powertrain from the base configuration
     powertrain = vehicle.comps['powertrain']
@@ -895,8 +935,48 @@ def define_post_analysis(manager):
     dfn_battery_model_outputs = dfn_battery_model.evaluate(dfn_battery_model_inputs)
     system_model.add_constraint(dfn_battery_model_outputs['temperature_profile'], upper=80.)
 
+    # For every rotor, get the torque profile and fit a torque function
+
+    torque_function_space = sifr.create_function_space(
+        name='torque',
+        type='bspline',
+        shape=(10, ),
+        order=(2, )
+    )
+
+    rotor_1 = vehicle.comps['airframe'].comps['lift_rotors'].comps['lift_rotor_1']
+    rotor_1_torque = []
+    for rotor_1_config in rotor_1.configs:
+        rotor_1_torque.append(rotor_1_config.states['torque'])
+
+    rotor_1_torque_function = power_function_space.fit_function(
+        mission_time,
+        rotor_1_torque, 
+    )
+
+    rotor_1_torque_interp = rotor_1_torque_function.evaluate(time_interp)
 
 
+    rotor_2_torque = []
+    rotor_2 = vehicle.comps['airframe'].comps['lift_rotors'].comps['lift_rotor_2']
+    rotor_2_torque = []
+    for rotor_2_config in rotor_2.configs:
+        rotor_2_torque.append(rotor_2_config.states['torque'])
+
+    rotor_2_torque_function = power_function_space.fit_function(
+        mission_time,
+        rotor_2_torque, 
+    )
+
+    rotor_2_torque_interp = rotor_2_torque_function.evaluate(time_interp)
+
+
+    # Build the power train models
+    motor_model_1 = MotorModel()
+    motor_1_power = motor_model_1.evaluate(rotor_1_torque_interp)
+
+    motor_model_2 = MotorModel()
+    motor_2_power = motor_model_1.evaluate(rotor_2_torque_interp)
 
 
 

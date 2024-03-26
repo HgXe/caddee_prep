@@ -198,9 +198,9 @@ def define_transition_configuration(config_copy):
     elevator = airframe.comps["h_tail"].comps["elevator"]
 
     for lift_rotor in lift_rotors:
-        lift_rotor.states["rpm"] = csdl.Variable(shape=(10,), val=1500)
+        lift_rotor.states["rpm"] = csdl.Variable(shape=(10,), val=1500) # NOTE: the variables/num_nodes (shape) should/could be defined later
         lift_rotor.states["y_tilt"] = csdl.Variable(shape=(10,))
-        lift_rotor.states["x_tilt"] = csdl.Variable(shape=(10,))
+        lift_rotor.states["x_tilt"] = csdl.expand(csdl.Variable(shape=(1,)), new_shape=(10, ))
         lift_rotor.states["blade_pitch"] = csdl.Variable(shape=(10, 30))
 
     elevator.states["deflection_angle"] = csdl.Variable(shape=(10,))
@@ -228,7 +228,7 @@ def define_conditions(caddee):
 
     # Transition
     transition_condition = cd.aircraft.conditions.Transition()
-    transition_condition.vehicle_states["u"] = csdl.Variable()
+    transition_condition.vehicle_states["u"] = csdl.Variable(shape=(10, ), val=np.linspace())
     transition_condition.vehicle_states["w"] = csdl.Variable()
     transition_condition.vehicle_states["x"] = csdl.Variable()
     transition_condition.vehicle_states["z"] = csdl.Variable()
@@ -241,12 +241,11 @@ def define_conditions(caddee):
 
     # Climb
     climb_condition = cd.aircraft.conditions.Climb()
-    climb_condition.states["time"] = csdl.Variable()
+    climb_condition.states["time"] = csdl.Variable() # NOTE: duration might be more clear
     climb_condition.states["initial_altitude"] = csdl.Variable()
     climb_condition.states["final_altitude"] = csdl.Variable()
     climb_condition.states["speed"] = csdl.Variable()
     climb_condition.states["pitch_angle"] = csdl.Variable()
-    climb_condition.states["flight_path_angle"] = csdl.Variable()
     climb_param_model = cd.aircraft.conditions.ClimbParamModel()
     climb_condition.vehicle_states = climb_param_model.evaluate(
         climb_condition.states
@@ -291,8 +290,8 @@ def define_mass_properties(caddee):
     m4_regression_inputs = cd.airfraft.zero_d.sizing.M4RegressionInputs()
     m4_regression_inputs["wing_AR"] = wing.AR
     m4_regression_inputs["wing_area"] = wing.S_ref
-    m4_regression_inputs["v_tail"] = v_tail.S_ref
-    m4_regression_inputs["h_tail"] = h_tail.S_ref
+    m4_regression_inputs["v_tail_area"] = v_tail.S_ref
+    m4_regression_inputs["h_tail_area"] = h_tail.S_ref
     m4_regression_inputs["fuselage_length"] = fuselage.length
     m4_regression_inputs["cruise_speed"] = cruise_condition.states["speed"]
 
